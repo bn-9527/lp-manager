@@ -511,3 +511,10 @@
   border-radius: 4px;
 }
 .fee-table tr.active { background: #1e2a4a; }
+
+.app-footer {
+  margin-top: 40px;
+  font-size: 11px;
+  color: #444;
+  font-family: monospace;
+}

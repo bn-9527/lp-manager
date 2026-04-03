@@ -4,6 +4,8 @@ import AddLiquidity from './components/AddLiquidity'
 import Tools from './components/Tools'
 import './App.css'
 
+declare const __COMMIT_HASH__: string
+
 function App() {
   const [tab, setTab] = useState<'liquidity' | 'tools'>('liquidity')
   return (
@@ -24,6 +26,7 @@ function App() {
         </>
       )}
       {tab === 'tools' && <Tools />}
+      <footer className="app-footer">build {__COMMIT_HASH__}</footer>
     </div>
   )
 }
