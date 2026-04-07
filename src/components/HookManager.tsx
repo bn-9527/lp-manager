@@ -103,7 +103,10 @@ export default function HookManager() {
   const feeNum = parseInt(fee)
   const isFeeZero = feeNum === 0
   useEffect(() => {
-    if (!isNaN(feeNum) && feeNum > 0) setTickSpacing(String(feeToTickSpacing(feeNum)))
+    // FIX: 在 effect 内部重新 parseInt，避免 exhaustive-deps 警告。
+    // feeNum 是从 fee 同步派生的局部变量，但 lint 无法推断两者关系。
+    const f = parseInt(fee)
+    if (!isNaN(f) && f > 0) setTickSpacing(String(feeToTickSpacing(f)))
   }, [fee])
 
   // FIX: 必须校验 token0 != token1，相同地址会导致 initializePool 等链上调用 revert 浪费 gas。

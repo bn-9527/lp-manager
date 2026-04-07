@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { numberToBigFraction, bigIntSqrt, priceToSqrtPriceX96, MIN_SQRT_RATIO, MAX_SQRT_RATIO } from './math'
+import { numberToBigFraction, priceToSqrtPriceX96, MIN_SQRT_RATIO, MAX_SQRT_RATIO } from './math'
 import { calculateSqrtPriceX96 } from './sqrtPrice'
 
 describe('numberToBigFraction', () => {

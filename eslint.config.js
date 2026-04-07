@@ -20,4 +20,11 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // 测试文件 mock wagmi hooks 大量需要 as any 做类型断言，属于合理使用
+    files: ['**/__tests__/**', '**/*.test.{ts,tsx}', 'src/test/**'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
 ])
