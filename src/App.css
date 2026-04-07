@@ -641,3 +641,20 @@
   background: #ff5555;
   color: #fff;
 }
+
+/* FIX: 移动端响应式 — 双列布局、radio 选项、合约地址行在小屏上挤压/溢出 */
+@media (max-width: 540px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+  .radio-group {
+    flex-wrap: wrap;
+  }
+  .wallet-info {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .price-row {
+    flex-wrap: wrap;
+  }
+}

@@ -1,37 +1,9 @@
 import { encodeAbiParameters, encodeFunctionData, type Hex, type Address } from 'viem'
 import { positionManagerAbi } from '../config/contracts'
-import { bigIntSqrt } from './sqrtPrice'
-
-/**
- * 将 Number 安全转为 BigInt 分数 (numerator / denominator)。
- * FIX: toPrecision/toFixed 对极端值会返回科学计数法字符串（如 "1e-9"），
- * BigInt() 无法解析。此函数先用 toExponential 提取尾数和指数，纯整数运算，
- * 避免科学计数法字符串传入 BigInt 导致崩溃。
- */
-export function numberToBigFraction(n: number): { numerator: bigint; denominator: bigint } {
-  if (n === 0 || !isFinite(n)) return { numerator: 0n, denominator: 1n }
-  // toExponential(14) 给出 "1.23456789012345e+5" 格式，始终有小数点和指数
-  const expStr = Math.abs(n).toExponential(14)
-  const [mantissa, expPart] = expStr.split('e')
-  const exp = parseInt(expPart)
-  const parts = mantissa.split('.')
-  const digits = (parts[0] || '0') + (parts[1] || '')
-  // digits 是去掉小数点的全部有效数字，mantissa 的小数位数 = fracLen
-  const fracLen = (parts[1] || '').length
-  // 实际值 = digits * 10^(exp - fracLen)
-  const shift = exp - fracLen
-  let numerator = BigInt(digits)
-  let denominator = 1n
-  if (shift >= 0) {
-    numerator = numerator * 10n ** BigInt(shift)
-  } else {
-    denominator = 10n ** BigInt(-shift)
-  }
-  return { numerator, denominator }
-}
+import { numberToBigFraction, priceToSqrtPriceX96 } from './math'
 
 // Action constants from v4-periphery/src/libraries/Actions.sol
-// MINT_POSITION = 0x02, SETTLE_PAIR = 0x0d
+// MINT_POSITION = 0x02, SETTLE_PAIR = 0x0d, SWEEP = 0x14
 
 // PoolKey tuple type for ABI encoding
 const poolKeyTuple = {
@@ -123,13 +95,13 @@ export function buildMintMulticallData(params: {
     args: [[modifyLiquiditiesCalldata]],
   })
 
-  // msg.value = native token amount when currency0 is address(0) (native BNB)
-  const value = params.currency0 === '0x0000000000000000000000000000000000000000' ? params.amount0Max : 0n
+  // msg.value = native token amount (address(0) always sorts to currency0, but handle both for safety)
+  const value = isNative0 ? params.amount0Max : isNative1 ? params.amount1Max : 0n
 
   return { calldata: multicallCalldata, value }
 }
 
-const FEE_PRESETS: Record<number, number> = { 100: 1, 200: 4, 300: 6, 400: 8, 500: 10, 3000: 60, 10000: 200 }
+export const FEE_PRESETS: Record<number, number> = { 100: 1, 200: 4, 300: 6, 400: 8, 500: 10, 3000: 60, 10000: 200 }
 
 export function feeToTickSpacing(fee: number): number {
   if (FEE_PRESETS[fee] !== undefined) return FEE_PRESETS[fee]
@@ -148,41 +120,40 @@ export function getFullRangeTicks(tickSpacing: number): { tickLower: number; tic
 
 /**
  * Convert a human-readable price (token1 per token0) to a tick.
- * tick = floor(log(price * 10^(dec0-dec1)) / log(1.0001))
+ * FIX: 原实现用浮点 Math.log(adjustedPrice) / Math.log(1.0001) 计算 tick，
+ * 与 BigInt 精确路径（getTickAtSqrtRatio）存在 ±1 tick 偏差（如 1.0001^100 → tick 99 而非 100）。
+ * 改为 priceToSqrtPriceX96 → getTickAtSqrtRatio 的纯 BigInt 路径，与链上 TickMath 精度一致。
  * Clamped to [-MAX_TICK, MAX_TICK] and aligned to tickSpacing.
  */
-export function priceToTick(price: number, dec0: number, dec1: number, tickSpacing: number): number {
-  if (price <= 0) return -MAX_TICK + (MAX_TICK % tickSpacing)
-  const adjustedPrice = price * Math.pow(10, dec0 - dec1)
-  const raw = Math.floor(Math.log(adjustedPrice) / Math.log(1.0001))
+export function priceToTick(price: number, dec0: number, dec1: number, tickSpacing: number, invert = false): number {
+  // FIX: price <= 0 时返回 tickSpacing 对齐的最小 tick，与 getFullRangeTicks 逻辑一致
+  if (price <= 0) return -(MAX_TICK - (MAX_TICK % tickSpacing))
+  // 通过 BigInt 精确路径计算 tick：price → sqrtPriceX96 → tick，避免浮点误差
+  // invert 参数在 BigInt 域内做 1/price 倒数，避免浮点 1/price 精度丢失
+  const sqrtPriceX96 = priceToSqrtPriceX96(price, dec0, dec1, invert)
+  const raw = getTickAtSqrtRatio(sqrtPriceX96)
   const clamped = Math.max(-MAX_TICK, Math.min(MAX_TICK, raw))
   // Round down to nearest tickSpacing
-  return clamped >= 0
+  const aligned = clamped >= 0
     ? clamped - (clamped % tickSpacing)
     : clamped - ((tickSpacing + (clamped % tickSpacing)) % tickSpacing)
+  // FIX: 负 tick 向下对齐可能超出 -MAX_TICK（如 -887272 对齐到 -887300），
+  // 链上 TickMath.getSqrtRatioAtTick 会 revert，必须再次 clamp。
+  // 使用对齐后的 MAX_TICK 确保 clamp 结果仍是 tickSpacing 的整数倍，
+  // 与 getFullRangeTicks 逻辑一致，避免返回未对齐的 tick。
+  const alignedMax = MAX_TICK - (MAX_TICK % tickSpacing)
+  return Math.max(-alignedMax, Math.min(alignedMax, aligned))
 }
 
 /**
  * Convert a tick to a human-readable price (token1 per token0).
  */
 export function tickToPrice(tick: number, dec0: number, dec1: number): number {
-  return Math.pow(1.0001, tick) * Math.pow(10, dec1 - dec0)
+  // FIX: tick 编码的是 raw price = humanPrice * 10^(dec1-dec0)，
+  // 反转还原 humanPrice 需乘以 10^(dec0-dec1)。原实现方向错误。
+  // 现在 priceToTick 用 10^(dec1-dec0) 编码，tickToPrice 用 10^(dec0-dec1) 解码，互为逆运算。
+  return Math.pow(1.0001, tick) * Math.pow(10, dec0 - dec1)
 }
-
-/**
- * Given amount0, current price (token1/token0), and a tick range,
- * calculate the required amount1 for a V3/V4 concentrated liquidity position.
- *
- * sqrtP = sqrt(price * 10^(dec0-dec1))
- * sqrtA = sqrt(1.0001^tickLower)
- * sqrtB = sqrt(1.0001^tickUpper)
- *
- * If sqrtP is within [sqrtA, sqrtB]:
- *   L = amount0 * (sqrtP * sqrtB) / (sqrtB - sqrtP)
- *   amount1 = L * (sqrtP - sqrtA) / 10^(dec0-dec1) ... adjusted for decimals
- *
- * Returns the ratio: amount1 / amount0 in human-readable terms (tokenB per tokenA).
- */
 
 /**
  * Uniswap V3 TickMath.getSqrtRatioAtTick 的纯 BigInt 移植。
@@ -194,7 +165,7 @@ export function tickToPrice(tick: number, dec0: number, dec1: number): number {
  *
  * 参考: https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/TickMath.sol
  */
-function getSqrtRatioAtTick(tick: number): bigint {
+export function getSqrtRatioAtTick(tick: number): bigint {
   const absTick = Math.abs(tick)
   if (absTick > 887272) throw new Error('tick out of range')
 
@@ -228,26 +199,58 @@ function getSqrtRatioAtTick(tick: number): bigint {
 }
 
 /**
- * 将人类可读价格转为 sqrtPriceX96（纯 BigInt 算术，与 sqrtPrice.ts 相同方法）。
- * 先将价格拆为 BigInt 分数 priceBig/priceScale，在 Q192 空间做除法后取 BigInt 平方根。
+ * Find the position of the most significant bit in a BigInt.
+ * Returns 0 for input 1, 255 for input 2^255, etc.
  */
-function priceToSqrtX96(currentPrice: number, dec0: number, dec1: number): bigint {
-  // FIX: toPrecision(15) 对极小/极大值返回科学计数法（如 "1.00e-9"），
-  // BigInt() 无法解析科学计数法字符串。改用 numberToBigFraction 安全拆分。
-  const { numerator: priceBig, denominator: priceScale } = numberToBigFraction(currentPrice)
+export function mostSignificantBit(x: bigint): number {
+  let msb = 0
+  if (x >= 0x100000000000000000000000000000000n) { x >>= 128n; msb += 128 }
+  if (x >= 0x10000000000000000n) { x >>= 64n; msb += 64 }
+  if (x >= 0x100000000n) { x >>= 32n; msb += 32 }
+  if (x >= 0x10000n) { x >>= 16n; msb += 16 }
+  if (x >= 0x100n) { x >>= 8n; msb += 8 }
+  if (x >= 0x10n) { x >>= 4n; msb += 4 }
+  if (x >= 0x4n) { x >>= 2n; msb += 2 }
+  if (x >= 0x2n) msb += 1
+  return msb
+}
 
-  const Q192 = 1n << 192n
-  let numerator = priceBig * Q192
-  let denominator = priceScale
-
-  const decDiff = dec0 - dec1
-  if (decDiff > 0) {
-    numerator = numerator * 10n ** BigInt(decDiff)
-  } else if (decDiff < 0) {
-    denominator = denominator * 10n ** BigInt(-decDiff)
+/**
+ * Uniswap V4 TickMath.getTickAtSqrtPrice 的纯 BigInt 移植。
+ * 给定 sqrtPriceX96 返回对应的 tick（向下取整）。
+ * 与链上合约精度一致：14 次迭代的 binary log refinement + disambiguation。
+ *
+ * 参考: https://github.com/Uniswap/v4-core/blob/main/src/libraries/TickMath.sol
+ */
+export function getTickAtSqrtRatio(sqrtPriceX96: bigint): number {
+  if (sqrtPriceX96 < 4295128739n || sqrtPriceX96 >= 1461446703485210103287273052203988822378723970342n) {
+    throw new Error('sqrtPriceX96 out of range')
   }
 
-  return bigIntSqrt(numerator / denominator)
+  const price = sqrtPriceX96 << 32n
+  let r = price
+  const msb = mostSignificantBit(r)
+
+  if (msb >= 128) r = price >> BigInt(msb - 127)
+  else r = price << BigInt(127 - msb)
+
+  let log2 = (BigInt(msb) - 128n) << 64n
+
+  // 14 iterations of binary log refinement (bits 63 down to 50)
+  for (let i = 63; i >= 50; i--) {
+    r = (r * r) >> 127n
+    const f = r >> 128n
+    log2 |= f << BigInt(i)
+    r >>= f
+  }
+
+  const logSqrt10001 = log2 * 255738958999603826347141n
+
+  const tickLow = Number((logSqrt10001 - 3402992956809132418596140100660247210n) >> 128n)
+  const tickHi = Number((logSqrt10001 + 291339464771989622907027621153398088495n) >> 128n)
+
+  if (tickLow === tickHi) return tickLow
+  return getSqrtRatioAtTick(tickHi) <= sqrtPriceX96 ? tickHi : tickLow
 }
 
 /**
@@ -264,8 +267,10 @@ export function getLiquidityForAmounts(
   currentPrice: number,
   tickLower: number, tickUpper: number,
   dec0: number, dec1: number,
+  invertPrice = false,
 ): bigint {
-  const sqrtP = priceToSqrtX96(currentPrice, dec0, dec1)
+  // FIX: use `invert` param for lossless BigInt 1/price instead of caller doing float `1/price`
+  const sqrtP = priceToSqrtPriceX96(currentPrice, dec0, dec1, invertPrice)
   const sqrtA = getSqrtRatioAtTick(tickLower)
   const sqrtB = getSqrtRatioAtTick(tickUpper)
   const Q96 = 1n << 96n
@@ -299,11 +304,12 @@ export function getLiquidityForAmounts(
 export function calcAmount1FromAmount0(
   amount0: number, currentPrice: number,
   tickLower: number, tickUpper: number,
-  dec0: number, dec1: number
+  dec0: number, dec1: number,
+  invertPrice = false,
 ): number {
   if (amount0 <= 0 || currentPrice <= 0) return 0
 
-  const sqrtP = priceToSqrtX96(currentPrice, dec0, dec1)
+  const sqrtP = priceToSqrtPriceX96(currentPrice, dec0, dec1, invertPrice)
   const sqrtA = getSqrtRatioAtTick(tickLower)
   const sqrtB = getSqrtRatioAtTick(tickUpper)
   const Q96 = 1n << 96n
@@ -312,7 +318,9 @@ export function calcAmount1FromAmount0(
     return 0
   }
   if (sqrtP >= sqrtB) {
-    return amount0 * currentPrice
+    // FIX: 价格高于范围时仓位为 100% token1，token0 应为 0，
+    // 从 amount0 推算 amount1 无意义，返回 0 让 UI 提示用户输入 token1
+    return 0
   }
 
   // amount0 转 wei (BigInt)
@@ -325,6 +333,48 @@ export function calcAmount1FromAmount0(
   // amount1Wei = L * (sqrtP - sqrtA) / Q96
   const amount1Wei = liquidity * (sqrtP - sqrtA) / Q96
 
-  // 转回人类可读数值
-  return Number(amount1Wei * 10000n / 10n ** BigInt(dec1)) / 10000
+  // FIX: 原实现用 * 10000n 仅保留 4 位小数，小额场景（如 0.000012 ETH）会截断为 0。
+  // 提升到 12 位有效小数覆盖绝大多数 DeFi 场景。
+  return Number(amount1Wei * 10n ** 12n / 10n ** BigInt(dec1)) / 1e12
+}
+
+/**
+ * calcAmount1FromAmount0 的反向函数：已知 amount1 求 amount0。
+ * 用于 swapped 场景下 tokenA=currency1 时，从 amountA 反推 amountB(=amount0)。
+ */
+export function calcAmount0FromAmount1(
+  amount1: number, currentPrice: number,
+  tickLower: number, tickUpper: number,
+  dec0: number, dec1: number,
+  invertPrice = false,
+): number {
+  if (amount1 <= 0 || currentPrice <= 0) return 0
+
+  const sqrtP = priceToSqrtPriceX96(currentPrice, dec0, dec1, invertPrice)
+  const sqrtA = getSqrtRatioAtTick(tickLower)
+  const sqrtB = getSqrtRatioAtTick(tickUpper)
+  const Q96 = 1n << 96n
+
+  if (sqrtP >= sqrtB) {
+    // price above range: position is 100% token1, no token0 needed
+    return 0
+  }
+  if (sqrtP <= sqrtA) {
+    // FIX: 价格低于范围时仓位为 100% token0，token1 应为 0，
+    // 从 amount1 推算 amount0 无意义，返回 0 让 UI 提示用户输入 token0
+    return 0
+  }
+
+  const { numerator: amt1Num, denominator: amt1Den } = numberToBigFraction(amount1)
+  const amount1Wei = amt1Num * 10n ** BigInt(dec1) / amt1Den
+
+  // L = amount1Wei * Q96 / (sqrtP - sqrtA)
+  const liquidity = amount1Wei * Q96 / (sqrtP - sqrtA)
+
+  // amount0Wei = L * Q96 * (sqrtB - sqrtP) / (sqrtP * sqrtB)
+  const amount0Wei = liquidity * Q96 * (sqrtB - sqrtP) / (sqrtP * sqrtB)
+
+  // FIX: 原实现用 * 10000n 仅保留 4 位小数，小额场景（如 0.000012 ETH）会截断为 0。
+  // 提升到 12 位有效小数覆盖绝大多数 DeFi 场景。
+  return Number(amount0Wei * 10n ** 12n / 10n ** BigInt(dec0)) / 1e12
 }

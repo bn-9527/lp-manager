@@ -5,8 +5,12 @@ import {
   priceToTick,
   tickToPrice,
   calcAmount1FromAmount0,
+  calcAmount0FromAmount1,
   getLiquidityForAmounts,
   buildMintMulticallData,
+  getSqrtRatioAtTick,
+  getTickAtSqrtRatio,
+  mostSignificantBit,
 } from './encoder'
 
 describe('feeToTickSpacing', () => {
@@ -87,10 +91,25 @@ describe('priceToTick', () => {
   })
 
   it('handles different decimals (e.g., 18 and 6)', () => {
-    // 1 WETH (18 dec) = 2000 USDC (6 dec)
-    // adjusted price = 2000 * 10^(18-6) = 2000 * 10^12
+    // FIX: 1 ETH(18dec) = 2000 USDC(6dec), ETH=currency0, USDC=currency1
+    // Uniswap raw price = 2000 * 10^(6-18) = 2e-9
+    // tick = getTickAtSqrtRatio(priceToSqrtPriceX96(2000, 18, 6)) = -200312
     const tick = priceToTick(2000, 18, 6, 1)
-    expect(tick).toBeGreaterThan(0)
+    expect(tick).toBe(-200312)
+  })
+
+  it('handles reverse cross-decimal dec0(6)/dec1(18)', () => {
+    // USDC(6) as currency0, WETH(18) as currency1, price=0.0005
+    // raw_price = 0.0005 * 10^(18-6) = 5e8, tick should be positive (~200311)
+    const tick = priceToTick(0.0005, 6, 18, 1)
+    expect(tick).toBe(200311)
+  })
+
+  it('priceToTick and tickToPrice are inverses for cross-decimal pairs', () => {
+    const price = 2000
+    const tick = priceToTick(price, 18, 6, 1)
+    const recovered = tickToPrice(tick, 18, 6)
+    expect(Math.abs(recovered - price) / price).toBeLessThan(0.001)
   })
 
   it('clamps to MIN_TICK for price <= 0', () => {
@@ -159,12 +178,88 @@ describe('calcAmount1FromAmount0', () => {
     expect(amount1).toBe(0)
   })
 
-  it('returns price-proportional when price is above range (all token1)', () => {
-    // Current price = 1000, but range is [200, 400] → price above range
+  it('returns 0 when price is above range (all token1, no token0 needed)', () => {
+    // FIX: 价格高于范围时仓位不需要 token0，从 amount0 推算 amount1 应返回 0
     const tickLower = priceToTick(200, 18, 18, 1)
     const tickUpper = priceToTick(400, 18, 18, 1)
     const amount1 = calcAmount1FromAmount0(1, 1000, tickLower, tickUpper, 18, 18)
-    expect(amount1).toBeCloseTo(1000, -1)
+    expect(amount1).toBe(0)
+  })
+
+  it('calculates correct amount1 for cross-decimal ETH(18)/USDC(6)', () => {
+    // FIX: 验证跨精度代币对不会因 decimal 方向错误产生天文数字
+    // 1 ETH = 2000 USDC, full range, amount0 = 1 ETH → amount1 ≈ 2000 USDC
+    const amount1 = calcAmount1FromAmount0(1, 2000, -887270, 887270, 18, 6)
+    // Full range at price=2000: amount1 ≈ price * amount0 = 2000
+    // Tight check: relative error < 1% (BigInt truncation accounts for small difference)
+    expect(Math.abs(amount1 - 2000) / 2000).toBeLessThan(0.01)
+  })
+})
+
+describe('calcAmount0FromAmount1', () => {
+  it('returns 0 when amount1 is 0', () => {
+    expect(calcAmount0FromAmount1(0, 600, -887270, 887270, 18, 18)).toBe(0)
+  })
+
+  it('returns 0 when price is 0', () => {
+    expect(calcAmount0FromAmount1(1, 0, -887270, 887270, 18, 18)).toBe(0)
+  })
+
+  it('calculates amount0 for full range with same decimals', () => {
+    const amount0 = calcAmount0FromAmount1(30, 600, -887270, 887270, 18, 18)
+    expect(amount0).toBeGreaterThan(0)
+    // Full range at price=600: amount0 ≈ amount1/price ≈ 30/600 = 0.05
+    expect(amount0).toBeGreaterThan(0.03)
+    expect(amount0).toBeLessThan(0.1)
+  })
+
+  it('returns 0 when price is above range (all token1, no token0 needed)', () => {
+    const tickLower = priceToTick(200, 18, 18, 1)
+    const tickUpper = priceToTick(400, 18, 18, 1)
+    const amount0 = calcAmount0FromAmount1(1, 1000, tickLower, tickUpper, 18, 18)
+    expect(amount0).toBe(0)
+  })
+
+  it('returns 0 when price is below range (all token0, no token1 needed)', () => {
+    // FIX: 价格低于范围时仓位不需要 token1，从 amount1 推算 amount0 应返回 0
+    const tickLower = priceToTick(200, 18, 18, 1)
+    const tickUpper = priceToTick(400, 18, 18, 1)
+    const amount0 = calcAmount0FromAmount1(1, 100, tickLower, tickUpper, 18, 18)
+    expect(amount0).toBe(0)
+  })
+
+  it('is approximately inverse of calcAmount1FromAmount0', () => {
+    const originalAmount0 = 0.05
+    const price = 600
+    const amount1 = calcAmount1FromAmount0(originalAmount0, price, -887270, 887270, 18, 18)
+    const recoveredAmount0 = calcAmount0FromAmount1(amount1, price, -887270, 887270, 18, 18)
+    // Allow 1% tolerance due to BigInt integer division truncation
+    expect(Math.abs(recoveredAmount0 - originalAmount0) / originalAmount0).toBeLessThan(0.01)
+  })
+
+  it('handles narrow range', () => {
+    // Custom range [400, 800] around price 600, same decimals
+    const tickLower = priceToTick(400, 18, 18, 60)
+    const tickUpper = priceToTick(800, 18, 18, 60)
+    const amount0 = calcAmount0FromAmount1(200, 600, tickLower, tickUpper, 18, 18)
+    expect(amount0).toBeGreaterThan(0)
+  })
+
+  it('calculates correct amount0 for cross-decimal ETH(18)/USDC(6)', () => {
+    // FIX: 验证跨精度代币对反向计算
+    // 2000 USDC → ~1 ETH at price=2000, full range
+    const amount0 = calcAmount0FromAmount1(2000, 2000, -887270, 887270, 18, 6)
+    // Tight check: relative error < 1%
+    expect(Math.abs(amount0 - 1) / 1).toBeLessThan(0.01)
+  })
+
+  it('cross-decimal roundtrip: calcAmount0 ↔ calcAmount1 consistency', () => {
+    // ETH(18)/USDC(6) full range at price=2000
+    const originalAmount0 = 1
+    const amount1 = calcAmount1FromAmount0(originalAmount0, 2000, -887270, 887270, 18, 6)
+    const recoveredAmount0 = calcAmount0FromAmount1(amount1, 2000, -887270, 887270, 18, 6)
+    // Roundtrip should be within 1% due to BigInt integer division truncation
+    expect(Math.abs(recoveredAmount0 - originalAmount0) / originalAmount0).toBeLessThan(0.01)
   })
 })
 
@@ -228,6 +323,31 @@ describe('getLiquidityForAmounts', () => {
     // price=1000, above range
     const liq = getLiquidityForAmounts(0n, 1000000000000000000n, 1000, tickLower, tickUpper, 18, 18)
     expect(liq).toBeGreaterThan(0n)
+  })
+
+  it('handles cross-decimal ETH(18)/USDC(6) full range', () => {
+    // FIX: 验证跨精度对 getLiquidityForAmounts 的 decimal 方向正确
+    // 1 ETH (1e18 wei) + 2000 USDC (2000e6 wei), price=2000, full range
+    const amount0 = 1000000000000000000n    // 1 ETH
+    const amount1 = 2000000000n             // 2000 USDC (6 decimals)
+    const liq = getLiquidityForAmounts(amount0, amount1, 2000, -887270, 887270, 18, 6)
+    // Precise expected value: 44721359549995
+    // Verify within 0.01% to catch decimal direction errors (wrong direction → orders of magnitude off)
+    const expected = 44721359549995n
+    const diff = liq > expected ? liq - expected : expected - liq
+    expect(Number(diff) / Number(expected)).toBeLessThan(0.0001)
+  })
+
+  it('handles reverse cross-decimal USDC(6)/WETH(18) full range', () => {
+    // dec0=6, dec1=18: validates the decDiff > 0 branch (dec1-dec0 = 12)
+    // 2000 USDC (2000e6 wei) + 1 WETH (1e18 wei), price=0.0005 (1 USDC = 0.0005 WETH)
+    const amount0 = 2000000000n             // 2000 USDC (6 decimals)
+    const amount1 = 1000000000000000000n    // 1 WETH (18 decimals)
+    const liq = getLiquidityForAmounts(amount0, amount1, 0.0005, -887270, 887270, 6, 18)
+    expect(liq).toBeGreaterThan(0n)
+    // Should be similar order of magnitude to the ETH/USDC case above
+    expect(liq).toBeGreaterThan(1000000000000n)   // > 1e12
+    expect(liq).toBeLessThan(1000000000000000n)   // < 1e15
   })
 })
 
@@ -323,5 +443,217 @@ describe('buildMintMulticallData', () => {
     const r2 = buildMintMulticallData(params)
     expect(r1.calldata).toBe(r2.calldata)
     expect(r1.value).toBe(r2.value)
+  })
+})
+
+const Q96 = 1n << 96n
+const MIN_SQRT_RATIO = 4295128739n
+const MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342n
+
+describe('mostSignificantBit', () => {
+  it('returns 0 for 1', () => {
+    expect(mostSignificantBit(1n)).toBe(0)
+  })
+
+  it('returns correct MSB for powers of 2', () => {
+    expect(mostSignificantBit(2n)).toBe(1)
+    expect(mostSignificantBit(4n)).toBe(2)
+    expect(mostSignificantBit(8n)).toBe(3)
+    expect(mostSignificantBit(128n)).toBe(7)
+    expect(mostSignificantBit(256n)).toBe(8)
+  })
+
+  it('returns correct MSB for non-power-of-2 values', () => {
+    expect(mostSignificantBit(3n)).toBe(1)    // 11 → MSB at bit 1
+    expect(mostSignificantBit(5n)).toBe(2)    // 101 → MSB at bit 2
+    expect(mostSignificantBit(255n)).toBe(7)  // 11111111 → MSB at bit 7
+  })
+
+  it('handles large boundary values', () => {
+    expect(mostSignificantBit(1n << 64n)).toBe(64)
+    expect(mostSignificantBit(1n << 128n)).toBe(128)
+    expect(mostSignificantBit(1n << 255n)).toBe(255)
+  })
+
+  it('handles values just below power-of-2 boundaries', () => {
+    // 2^128 - 1: all 128 bits set, MSB at bit 127
+    expect(mostSignificantBit((1n << 128n) - 1n)).toBe(127)
+    // 2^64 - 1: all 64 bits set, MSB at bit 63
+    expect(mostSignificantBit((1n << 64n) - 1n)).toBe(63)
+  })
+})
+
+describe('getSqrtRatioAtTick', () => {
+  it('returns 2^96 for tick=0', () => {
+    expect(getSqrtRatioAtTick(0)).toBe(Q96)
+  })
+
+  it('returns correct value for tick=1', () => {
+    const result = getSqrtRatioAtTick(1)
+    expect(result).toBeGreaterThan(Q96)
+    // sqrtRatio at tick=1 ≈ Q96 * sqrt(1.0001) ≈ Q96 * 1.00005
+    // Allow small range check
+    expect(result - Q96).toBeGreaterThan(0n)
+    expect(result - Q96).toBeLessThan(Q96 / 10000n)
+  })
+
+  it('returns correct value for tick=-1', () => {
+    const result = getSqrtRatioAtTick(-1)
+    expect(result).toBeLessThan(Q96)
+    expect(Q96 - result).toBeGreaterThan(0n)
+    expect(Q96 - result).toBeLessThan(Q96 / 10000n)
+  })
+
+  it('positive and negative ticks are reciprocals', () => {
+    // getSqrtRatio(tick) * getSqrtRatio(-tick) ≈ Q96^2
+    for (const tick of [1, 100, 1000, 63972]) {
+      const pos = getSqrtRatioAtTick(tick)
+      const neg = getSqrtRatioAtTick(-tick)
+      const product = pos * neg
+      const q96sq = Q96 * Q96
+      // Allow 0.01% relative error due to rounding
+      const relError = Number(product > q96sq ? product - q96sq : q96sq - product) / Number(q96sq)
+      expect(relError).toBeLessThan(0.0001)
+    }
+  })
+
+  it('handles MAX_TICK (887272)', () => {
+    const result = getSqrtRatioAtTick(887272)
+    expect(result).toBeGreaterThan(0n)
+    // MAX_TICK maps to MAX_SQRT_RATIO exactly (with rounding up in Q96 conversion)
+    expect(result).toBeLessThanOrEqual(MAX_SQRT_RATIO)
+  })
+
+  it('handles MIN_TICK (-887272)', () => {
+    const result = getSqrtRatioAtTick(-887272)
+    expect(result).toBeGreaterThan(0n)
+    // Should be close to but not below MIN_SQRT_RATIO
+    expect(result).toBeGreaterThanOrEqual(MIN_SQRT_RATIO)
+  })
+
+  it('throws for tick > MAX_TICK', () => {
+    expect(() => getSqrtRatioAtTick(887273)).toThrow('tick out of range')
+  })
+
+  it('throws for tick < -MAX_TICK', () => {
+    expect(() => getSqrtRatioAtTick(-887273)).toThrow('tick out of range')
+  })
+
+  it('is monotonically increasing', () => {
+    const ticks = [-887272, -100000, -1000, -1, 0, 1, 1000, 100000, 887272]
+    for (let i = 1; i < ticks.length; i++) {
+      expect(getSqrtRatioAtTick(ticks[i])).toBeGreaterThan(getSqrtRatioAtTick(ticks[i - 1]))
+    }
+  })
+
+  it('matches known value for tick=63972 (BNB=600 TEST)', () => {
+    // Known sqrtPriceX96 for 1 BNB = 600 TEST (from sqrtPrice.test.ts)
+    const expected = 1940685714182491852533977682922n
+    const result = getSqrtRatioAtTick(63972)
+    // Should be close but not necessarily exact (tick is quantized)
+    const relError = Number(result > expected ? result - expected : expected - result) / Number(expected)
+    expect(relError).toBeLessThan(0.0001)
+  })
+})
+
+describe('getTickAtSqrtRatio', () => {
+  it('returns 0 for sqrtPriceX96 = 2^96', () => {
+    expect(getTickAtSqrtRatio(Q96)).toBe(0)
+  })
+
+  it('returns -887272 for MIN_SQRT_RATIO', () => {
+    expect(getTickAtSqrtRatio(MIN_SQRT_RATIO)).toBe(-887272)
+  })
+
+  it('returns 887271 for MAX_SQRT_RATIO - 1', () => {
+    // MAX_SQRT_RATIO - 1 is the largest valid sqrtPriceX96
+    expect(getTickAtSqrtRatio(MAX_SQRT_RATIO - 1n)).toBe(887271)
+  })
+
+  it('throws for sqrtPriceX96 < MIN_SQRT_RATIO', () => {
+    expect(() => getTickAtSqrtRatio(MIN_SQRT_RATIO - 1n)).toThrow('out of range')
+    expect(() => getTickAtSqrtRatio(0n)).toThrow('out of range')
+  })
+
+  it('throws for sqrtPriceX96 >= MAX_SQRT_RATIO', () => {
+    expect(() => getTickAtSqrtRatio(MAX_SQRT_RATIO)).toThrow('out of range')
+    expect(() => getTickAtSqrtRatio(MAX_SQRT_RATIO + 1n)).toThrow('out of range')
+  })
+
+  it('is inverse of getSqrtRatioAtTick', () => {
+    // For any tick t, getTickAtSqrtRatio(getSqrtRatioAtTick(t)) === t
+    // Exclude MAX_TICK (887272) because getSqrtRatioAtTick(887272) equals MAX_SQRT_RATIO,
+    // which is out of range for getTickAtSqrtRatio (requires < MAX_SQRT_RATIO)
+    for (const tick of [-887272, -100000, -1000, -1, 0, 1, 1000, 100000, 887271]) {
+      const sqrtRatio = getSqrtRatioAtTick(tick)
+      expect(getTickAtSqrtRatio(sqrtRatio)).toBe(tick)
+    }
+  })
+
+  it('getSqrtRatioAtTick(getTickAtSqrtRatio(x)) <= x', () => {
+    // getTickAtSqrtRatio floors, so getSqrtRatioAtTick(result) should be <= input
+    const testValues = [
+      MIN_SQRT_RATIO,
+      Q96 / 2n,
+      Q96,
+      Q96 * 2n,
+      Q96 * 100n,
+      MAX_SQRT_RATIO - 1n,
+    ]
+    for (const sqrtP of testValues) {
+      const tick = getTickAtSqrtRatio(sqrtP)
+      const recovered = getSqrtRatioAtTick(tick)
+      expect(recovered).toBeLessThanOrEqual(sqrtP)
+    }
+  })
+
+  it('handles common DeFi price sqrtPriceX96 values', () => {
+    // BNB=600 TEST: known sqrtPriceX96 = 1940685714182491852533977682922
+    const tick = getTickAtSqrtRatio(1940685714182491852533977682922n)
+    expect(tick).toBe(63972)
+  })
+})
+
+describe('priceToTick — alignment after clamp', () => {
+  it('returns tickSpacing-aligned tick even at extreme negative prices', () => {
+    // Very small price forces tick near -MAX_TICK, clamp must preserve alignment
+    for (const tickSpacing of [1, 10, 60, 200]) {
+      const tick = priceToTick(1e-30, 18, 18, tickSpacing)
+      // Use Math.abs to handle -0 from JS modulo on negative numbers
+      expect(Math.abs(tick % tickSpacing)).toBe(0)
+      expect(tick).toBeLessThan(0)
+    }
+  })
+
+  it('returns tickSpacing-aligned tick at price=0 boundary', () => {
+    for (const tickSpacing of [1, 10, 60, 200]) {
+      const tick = priceToTick(0, 18, 18, tickSpacing)
+      expect(Math.abs(tick % tickSpacing)).toBe(0)
+    }
+  })
+
+  it('clamped tick matches getFullRangeTicks boundary', () => {
+    // After clamp, the minimum tick should equal -getFullRangeTicks.tickUpper
+    for (const tickSpacing of [10, 60, 200]) {
+      const { tickLower } = getFullRangeTicks(tickSpacing)
+      const tick = priceToTick(0, 18, 18, tickSpacing)
+      expect(tick).toBe(tickLower)
+    }
+  })
+
+  it('returns tickSpacing-aligned tick at extremely large prices', () => {
+    for (const tickSpacing of [1, 10, 60, 200]) {
+      const tick = priceToTick(1e30, 18, 18, tickSpacing)
+      expect(Math.abs(tick % tickSpacing)).toBe(0)
+      expect(tick).toBeGreaterThan(0)
+    }
+  })
+
+  it('cross-decimal extreme price still aligns', () => {
+    // ETH(18)/USDC(6) with extreme price
+    for (const tickSpacing of [10, 60]) {
+      const tick = priceToTick(1e-20, 18, 6, tickSpacing)
+      expect(Math.abs(tick % tickSpacing)).toBe(0)
+    }
   })
 })

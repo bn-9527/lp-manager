@@ -29,7 +29,7 @@ export default function DatetimeUnix() {
   const [utcDate, setUtcDate] = useState('')
   const [utcTime, setUtcTime] = useState('')
   const [unixInput, setUnixInput] = useState('')
-  const [result, setResult] = useState<TsResult | null>(null)
+  const [conversionResult, setResult] = useState<TsResult | null>(null)
   const updating = useRef(false)
 
   const onUtcChange = useCallback(
@@ -133,27 +133,27 @@ export default function DatetimeUnix() {
         </button>
       </div>
 
-      {result && (
+      {conversionResult && (
         <div className="tool-result">
           <div className="kv">
             <div className="kv-label">Timestamp</div>
-            <div className="kv-value">{result.timestamp}</div>
+            <div className="kv-value">{conversionResult.timestamp}</div>
           </div>
           <div className="kv">
             <div className="kv-label">Timestamp (ms)</div>
-            <div className="kv-value">{result.timestampMs}</div>
+            <div className="kv-value">{conversionResult.timestampMs}</div>
           </div>
           <div className="kv">
             <div className="kv-label">ISO 8601</div>
-            <div className="kv-value">{result.iso}</div>
+            <div className="kv-value">{conversionResult.iso}</div>
           </div>
           <div className="kv">
             <div className="kv-label">Date Time (UTC)</div>
-            <div className="kv-value">{result.utcStr}</div>
+            <div className="kv-value">{conversionResult.utcStr}</div>
           </div>
           <div className="kv">
-            <div className="kv-label">{`Date Time (${result.timezone})`}</div>
-            <div className="kv-value">{result.localStr}</div>
+            <div className="kv-label">{`Date Time (${conversionResult.timezone})`}</div>
+            <div className="kv-value">{conversionResult.localStr}</div>
           </div>
         </div>
       )}

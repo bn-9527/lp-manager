@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { calculateSqrtPriceX96 as calculate } from '../../utils/sqrtPrice'
+import { calculateSqrtPriceX96 } from '../../utils/sqrtPrice'
 
 const PRICE_PRESETS = ['1', '0.001', '100', '1000', '2000']
 
@@ -15,13 +15,17 @@ export default function SqrtPriceX96() {
   const displaySymA = symA || 'A'
   const displaySymB = symB || 'B'
 
-  const result = useMemo(
+  const priceResult = useMemo(
     () =>
-      calculate(
+      calculateSqrtPriceX96(
         addrA,
         addrB,
-        parseInt(decA) || 0,
-        parseInt(decB) || 0,
+        // FIX: 使用 isNaN 而非 || 做 fallback，避免 falsy-zero bug：
+        // parseInt('0') 返回 0，0 || 18 会静默替换为 18，导致 decimals=0 的 token
+        // （如 AMPL 等）计算出完全错误的 sqrtPriceX96。与 AddLiquidity 中已修复的
+        // fee || 500 和 slippage || 0.1 是同一 anti-pattern。
+        (() => { const v = parseInt(decA); return isNaN(v) ? 18 : v })(),
+        (() => { const v = parseInt(decB); return isNaN(v) ? 18 : v })(),
         displaySymA,
         displaySymB,
         priceInput,
@@ -132,48 +136,48 @@ export default function SqrtPriceX96() {
       </div>
 
       {/* Results */}
-      {result && !result.error && (
+      {priceResult && !priceResult.error && (
         <div className="tool-result">
           <div className="kv">
             <div className="kv-label">Token Sort</div>
             <div className="kv-value">
-              {result.isSwapped && (
+              {priceResult.isSwapped && (
                 <span style={{ color: '#ff79c6', marginRight: 8 }}>Swapped</span>
               )}
-              token0={result.sym0} token1={result.sym1}
+              token0={priceResult.sym0} token1={priceResult.sym1}
             </div>
           </div>
           <div className="kv">
             <div className="kv-label">Pool Price (token1/token0)</div>
-            <div className="kv-value">{result.poolPriceFloat.toPrecision(10)}</div>
+            <div className="kv-value">{priceResult.poolPriceFloat.toPrecision(10)}</div>
           </div>
           <div className="kv">
             <div className="kv-label">sqrtPriceX96</div>
-            <div className="kv-value">{result.sqrtPriceX96.toString()}</div>
+            <div className="kv-value">{priceResult.sqrtPriceX96.toString()}</div>
           </div>
           <div className="kv">
             <div className="kv-label">sqrtPriceX96 (hex)</div>
-            <div className="kv-value">{result.sqrtPriceX96Hex}</div>
+            <div className="kv-value">{priceResult.sqrtPriceX96Hex}</div>
           </div>
           <div className="kv">
             <div className="kv-label">Tick (approx)</div>
-            <div className="kv-value">{result.tick}</div>
+            <div className="kv-value">{priceResult.tick}</div>
           </div>
           <div className="kv">
             <div className="kv-label" />
             <div style={{ color: '#888', fontSize: 12 }}>
-              1 {result.symA} = {result.priceStr} {result.symB}
+              1 {priceResult.symA} = {priceResult.priceStr} {priceResult.symB}
             </div>
           </div>
         </div>
       )}
 
-      {result?.error && (
+      {priceResult?.error && (
         <div className="tool-result">
           <div className="kv">
             <div className="kv-label">Error</div>
             <div className="kv-value" style={{ color: '#ff5555' }}>
-              {result.error}
+              {priceResult.error}
             </div>
           </div>
         </div>

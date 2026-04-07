@@ -2,10 +2,32 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { isAddress, type Address, type Hex } from 'viem'
 import { HOOK_CONFIGS, type HookProtocol } from '../config/hooks'
-import { explorerTx } from '../config/contracts'
+import { explorerTx, erc20Abi, getChainConfig, isChainSupported, ZERO_ADDR } from '../config/contracts'
 import AddressLink from './AddressLink'
 import { calculateSqrtPriceX96 } from '../utils/sqrtPrice'
 import { feeToTickSpacing } from '../utils/encoder'
+
+function CollapsibleSection({ id, label, expanded, onToggle, children }: {
+  id: string; label: string; expanded: string | null; onToggle: (id: string) => void; children: React.ReactNode
+}) {
+  const isOpen = expanded === id
+  return (
+    <div>
+      {/* FIX: 原 <div> 不可键盘操作，添加 role/tabIndex/onKeyDown 使键盘用户可展开/折叠 */}
+      <div
+        className="collapsible-header"
+        role="button"
+        tabIndex={0}
+        onClick={() => onToggle(id)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(id) } }}
+      >
+        <span className="section-label">{label}</span>
+        <span className={`toggle-icon ${isOpen ? 'open' : ''}`}>&#9654;</span>
+      </div>
+      {isOpen && <div className="collapsible-body">{children}</div>}
+    </div>
+  )
+}
 
 export default function HookManager() {
   const { address, isConnected, chain } = useAccount()
@@ -20,22 +42,48 @@ export default function HookManager() {
   useEffect(() => {
     const addr = (chainId && config.defaultAddresses[chainId]) || ''
     setHookAddress(addr)
+    // FIX: 切换 protocol 或链时必须重置所有 pool 参数和操作状态，
+    // 否则旧的 token/fee/sqrtPriceX96/txHash 留存，用户可能基于过期数据误操作。
+    setToken0('')
+    setToken1('')
+    setFee('500')
+    setTickSpacing('10')
+    setInitPrice('600')
+    setInitSqrtPriceX96('')
+    setInitTimestamp('')
+    setInitDatetime('')
+    setInitTxHash(undefined)
+    setOpTxHash(undefined)
+    setTxError(null)
+    setNewOwners('')
+    setRemoveChecked(new Set())
+    setNewStartTimestamp('')
+    setNewStartDatetime('')
+    setNewPosManager('')
+    setNewOwnerAddr('')
+    // FIX: Emergency Withdraw 面板状态也必须重置，否则切换链后旧 token 地址残留，
+    // 可能导致用户对错误链上的错误 token 发起紧急提现。
+    setWithdrawType('safe')
+    setWithdrawToken('')
+    setWithdrawTokenId('')
   }, [protocol, chainId, config])
 
   const validHook = isAddress(hookAddress)
 
   // Auto-read hook info
-  const { data: hookOwner } = useReadContract({
+  // FIX: 必须解构 refetch，否则 setPositionManager/transferOwnership/acceptOwnership
+  // 交易确认后 UI 仍显示旧值，用户需手动刷新页面才能看到更新。
+  const { data: hookOwner, refetch: refetchOwner } = useReadContract({
     address: validHook ? (hookAddress as Address) : undefined,
     abi: config.abi, functionName: 'owner',
     query: { enabled: validHook },
   })
-  const { data: pendingOwner } = useReadContract({
+  const { data: pendingOwner, refetch: refetchPendingOwner } = useReadContract({
     address: validHook ? (hookAddress as Address) : undefined,
     abi: config.abi, functionName: 'pendingOwner',
     query: { enabled: validHook },
   })
-  const { data: hookPositionManager } = useReadContract({
+  const { data: hookPositionManager, refetch: refetchPositionManager } = useReadContract({
     address: validHook ? (hookAddress as Address) : undefined,
     abi: config.abi, functionName: 'positionManager',
     query: { enabled: validHook },
@@ -49,18 +97,59 @@ export default function HookManager() {
   const [token1, setToken1] = useState('')
   const [fee, setFee] = useState('500')
   const [tickSpacing, setTickSpacing] = useState('10')
+  // FIX: fee=0 是 Uniswap V4 合法值（动态费率池，由 hook 在 swap 时设置费率）。
+  // fee>0 时 tickSpacing 由 feeToTickSpacing 自动计算；fee=0 时用户必须手动指定 tickSpacing，
+  // 因为动态费率池的 tickSpacing 由部署者决定，无法从 fee 推导。
+  const feeNum = parseInt(fee)
+  const isFeeZero = feeNum === 0
   useEffect(() => {
-    const f = parseInt(fee)
-    if (f > 0) setTickSpacing(String(feeToTickSpacing(f)))
+    if (!isNaN(feeNum) && feeNum > 0) setTickSpacing(String(feeToTickSpacing(feeNum)))
   }, [fee])
 
-  const poolParamsValid = isAddress(token0) && isAddress(token1) && parseInt(fee) > 0 && parseInt(tickSpacing) > 0
+  // FIX: 必须校验 token0 != token1，相同地址会导致 initializePool 等链上调用 revert 浪费 gas。
+  // fee 范围 [0, 1000000]：0 = 动态费率池，1000000 = 100%（Uniswap V4 上限）。
+  // 与 AddLiquidity.tsx 保持一致的校验标准。
+  const poolParamsValid = isAddress(token0) && isAddress(token1)
+    && token0.toLowerCase() !== token1.toLowerCase()
+    && !isNaN(feeNum) && feeNum >= 0 && feeNum <= 1000000
+    && parseInt(tickSpacing) > 0
+
+  // Read token symbols and decimals for display
+  const isNative0 = token0.toLowerCase() === ZERO_ADDR
+  const isNative1 = token1.toLowerCase() === ZERO_ADDR
+  const validT0 = isAddress(token0) && !isNative0
+  const validT1 = isAddress(token1) && !isNative1
+  const chainConfig = getChainConfig(chainId)
+  const { data: sym0Raw } = useReadContract({ address: validT0 ? (token0 as Address) : undefined, abi: erc20Abi, functionName: 'symbol', query: { enabled: validT0 } })
+  const { data: sym1Raw } = useReadContract({ address: validT1 ? (token1 as Address) : undefined, abi: erc20Abi, functionName: 'symbol', query: { enabled: validT1 } })
+  const { data: dec0Raw } = useReadContract({ address: validT0 ? (token0 as Address) : undefined, abi: erc20Abi, functionName: 'decimals', query: { enabled: validT0 } })
+  const { data: dec1Raw } = useReadContract({ address: validT1 ? (token1 as Address) : undefined, abi: erc20Abi, functionName: 'decimals', query: { enabled: validT1 } })
+  const symbol0 = isNative0 ? chainConfig.nativeSymbol : (sym0Raw as string | undefined) ?? '???'
+  const symbol1 = isNative1 ? chainConfig.nativeSymbol : (sym1Raw as string | undefined) ?? '???'
+  // FIX: 不能对 decimals 设默认值 18，否则 USDC (6位) 等非18精度代币在 RPC 未返回时
+  // 会用错误的 decimals 计算 sqrtPriceX96，导致 initializePool 设置完全错误的初始价格。
+  const decimals0 = isNative0 ? 18 : (dec0Raw as number | undefined)
+  const decimals1 = isNative1 ? 18 : (dec1Raw as number | undefined)
+
+  // Sorted tokens for display (lower address = currency0)
+  const sorted = token0 && token1 && token0.toLowerCase() < token1.toLowerCase()
+  const sortedSym0 = sorted ? symbol0 : symbol1
+  const sortedSym1 = sorted ? symbol1 : symbol0
+  const sortedDec0 = sorted ? decimals0 : decimals1
+  const sortedDec1 = sorted ? decimals1 : decimals0
+  const decimalsReady = (isNative0 || decimals0 !== undefined) && (isNative1 || decimals1 !== undefined)
 
   // Read poolId from contract
   const { data: poolId, refetch: refetchPoolId } = useReadContract({
     address: validHook ? (hookAddress as Address) : undefined,
     abi: config.abi, functionName: 'getPoolId',
-    args: poolParamsValid ? [token0 as Address, token1 as Address, parseInt(fee), parseInt(tickSpacing)] : undefined,
+    // FIX: getPoolId 必须传入排序后的 token 地址（低地址在前），与 initializePool 保持一致，
+    // 否则查到错误的 poolId，后续所有 pool 状态查询和操作都指向错误的池子
+    args: poolParamsValid ? [
+      (token0.toLowerCase() < token1.toLowerCase() ? token0 : token1) as Address,
+      (token0.toLowerCase() < token1.toLowerCase() ? token1 : token0) as Address,
+      parseInt(fee), parseInt(tickSpacing),
+    ] : undefined,
     query: { enabled: validHook && poolParamsValid },
   })
 
@@ -99,18 +188,25 @@ export default function HookManager() {
     refetchStarted()
     refetchTimestamp()
     refetchOwners()
-  }, [refetchPoolId, refetchEnabled, refetchStarted, refetchTimestamp, refetchOwners])
+    // FIX: 原先遗漏了 hook 级别的三个读取状态，导致 setPositionManager/transferOwnership/
+    // acceptOwnership 交易确认后 UI 显示过期数据，用户需手动刷新页面。
+    refetchOwner()
+    refetchPendingOwner()
+    refetchPositionManager()
+  }, [refetchPoolId, refetchEnabled, refetchStarted, refetchTimestamp, refetchOwners,
+    refetchOwner, refetchPendingOwner, refetchPositionManager])
 
   // Transaction state
-  const [txHash, setTxHash] = useState<Hex | undefined>()
+  // FIX: 拆分为 initTxHash（initializePool 专用）和 opTxHash（其余操作共用），
+  // 避免连续执行两个操作时后一个 hash 覆盖前一个导致确认状态丢失。
+  const [initTxHash, setInitTxHash] = useState<Hex | undefined>()
+  const [opTxHash, setOpTxHash] = useState<Hex | undefined>()
   const [txError, setTxError] = useState<string | null>(null)
+  // FIX: 防止写操作期间按钮可重复点击，导致发送多笔相同交易浪费 gas
+  const [isBusy, setIsBusy] = useState(false)
   const { writeContractAsync } = useWriteContract()
-  const { isLoading: isTxConfirming, isSuccess: isTxConfirmed } = useWaitForTransactionReceipt({ hash: txHash })
-
-  const resetTx = useCallback(() => {
-    setTxHash(undefined)
-    setTxError(null)
-  }, [])
+  const { isLoading: isInitConfirming, isSuccess: isInitConfirmed } = useWaitForTransactionReceipt({ hash: initTxHash })
+  const { isLoading: isOpConfirming, isSuccess: isOpConfirmed } = useWaitForTransactionReceipt({ hash: opTxHash })
 
   // Collapsible sections
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -118,8 +214,34 @@ export default function HookManager() {
 
   // --- Initialize Pool ---
   const [initPrice, setInitPrice] = useState('600')
+  const [initSqrtPriceX96, setInitSqrtPriceX96] = useState('')
   const [initTimestamp, setInitTimestamp] = useState('')
   const [initDatetime, setInitDatetime] = useState('')
+
+  // Auto-compute sqrtPriceX96 from price (user can override)
+  // Price is entered as "1 sortedSym0 = X sortedSym1" (sorted currency1 per sorted currency0)
+  const recomputeSqrtPrice = useCallback((priceStr: string) => {
+    const p = parseFloat(priceStr)
+    if (p > 0 && isAddress(token0) && isAddress(token1) && sortedDec0 !== undefined && sortedDec1 !== undefined) {
+      const t0 = token0.toLowerCase() < token1.toLowerCase() ? token0 : token1
+      const t1 = t0 === token0 ? token1 : token0
+      const calcResult = calculateSqrtPriceX96(t0, t1, sortedDec0, sortedDec1, sortedSym0, sortedSym1, priceStr)
+      if (calcResult && calcResult.sqrtPriceX96 > 0n) {
+        setInitSqrtPriceX96(calcResult.sqrtPriceX96.toString())
+      }
+    }
+  }, [token0, token1, sortedDec0, sortedDec1, sortedSym0, sortedSym1])
+
+  const handleInitPriceChange = (val: string) => {
+    setInitPrice(val)
+    recomputeSqrtPrice(val)
+  }
+
+  // FIX: token 地址或 decimals 变化时必须重算 sqrtPriceX96，否则 token 排序翻转后
+  // sqrtPriceX96 仍为旧值，initializePool 会以完全错误的价格初始化池子，造成资金损失。
+  useEffect(() => {
+    if (initPrice) recomputeSqrtPrice(initPrice)
+  }, [recomputeSqrtPrice, initPrice])
 
   const handleInitDatetimeChange = (val: string) => {
     setInitDatetime(val)
@@ -128,45 +250,49 @@ export default function HookManager() {
       if (!isNaN(ts)) setInitTimestamp(String(ts))
     }
   }
-  const handleInitTimestampChange = (val: string) => {
-    setInitTimestamp(val)
-    const ts = parseInt(val)
-    if (!isNaN(ts) && ts > 0) {
-      const d = new Date(ts * 1000)
-      setInitDatetime(d.toISOString().slice(0, 16))
-    }
-  }
-
-  // --- CL-specific: read poolManager for initializePool ---
+  // FIX: 使用 config.needsPoolManager 配置驱动，而非硬编码 protocol === 'pcs-cl'，
+  // 新增 protocol 时不需要手动维护多处条件判断。
   const { data: clPoolManager } = useReadContract({
-    address: validHook && protocol === 'pcs-cl' ? (hookAddress as Address) : undefined,
-    abi: HOOK_CONFIGS['pcs-cl'].abi,
+    address: validHook && config.needsPoolManager ? (hookAddress as Address) : undefined,
+    abi: config.abi,
     functionName: 'poolManager',
-    query: { enabled: validHook && protocol === 'pcs-cl' },
+    query: { enabled: validHook && config.needsPoolManager },
   })
 
   const { data: clPoolKeyParameters } = useReadContract({
-    address: validHook && protocol === 'pcs-cl' ? (hookAddress as Address) : undefined,
-    abi: HOOK_CONFIGS['pcs-cl'].abi,
+    address: validHook && config.needsPoolManager ? (hookAddress as Address) : undefined,
+    abi: config.abi,
     functionName: 'getPoolKeyParameters',
     args: parseInt(tickSpacing) > 0 ? [parseInt(tickSpacing)] : undefined,
-    query: { enabled: validHook && protocol === 'pcs-cl' && parseInt(tickSpacing) > 0 },
+    query: { enabled: validHook && config.needsPoolManager && parseInt(tickSpacing) > 0 },
   })
 
   async function handleInitializePool() {
-    if (!validHook || !poolParamsValid) return
-    resetTx()
+    // FIX: 必须校验链支持性，否则用户在不支持的链上手动填入 hook 地址后可发送交易，
+    // config.defaultAddresses[chainId] 为空只阻止了默认地址，不阻止手动输入场景。
+    if (!validHook || !poolParamsValid || isBusy || !isChainSupported(chainId)) return
+    // FIX: initializePool 是不可逆链上操作，一旦执行池子以指定 sqrtPriceX96 创建无法撤销，
+    // 参数错误会导致套利损失。必须与 removeOwners/emergencyWithdraw/transferOwnership 一样弹窗确认。
+    const t0Preview = token0.toLowerCase() < token1.toLowerCase() ? token0 : token1
+    const t1Preview = t0Preview === token0 ? token1 : token0
+    if (!window.confirm(
+      `Initialize pool? This is irreversible.\n\n` +
+      `Currency0: ${t0Preview}\nCurrency1: ${t1Preview}\n` +
+      `Fee: ${fee}\nsqrtPriceX96: ${initSqrtPriceX96}\nStart Time: ${initTimestamp}`
+    )) return
+    setInitTxHash(undefined)
+    setTxError(null)
+    setIsBusy(true)
     try {
       const ts = BigInt(initTimestamp)
       if (ts <= 0n) throw new Error('Invalid timestamp')
-      const p = parseFloat(initPrice)
-      if (!(p > 0)) throw new Error('Invalid price')
+      if (!initSqrtPriceX96) throw new Error('sqrtPriceX96 is required')
+      const sqrtPriceX96 = BigInt(initSqrtPriceX96)
+      if (sqrtPriceX96 <= 0n) throw new Error('Invalid sqrtPriceX96')
       const t0 = token0.toLowerCase() < token1.toLowerCase() ? token0 : token1
       const t1 = t0 === token0 ? token1 : token0
-      const result = calculateSqrtPriceX96(t0, t1, 18, 18, 'T0', 'T1', initPrice)
-      if (!result || result.sqrtPriceX96 <= 0n) throw new Error('Failed to calculate sqrtPriceX96')
 
-      if (protocol === 'pcs-cl') {
+      if (config.needsPoolManager) {
         if (!clPoolManager || !clPoolKeyParameters) throw new Error('CL poolManager or parameters not loaded')
         const hash = await writeContractAsync({
           address: hookAddress as Address,
@@ -182,10 +308,10 @@ export default function HookManager() {
               parameters: clPoolKeyParameters as Hex,
             },
             ts,
-            result.sqrtPriceX96,
+            sqrtPriceX96,
           ],
         })
-        setTxHash(hash)
+        setInitTxHash(hash)
       } else {
         const hash = await writeContractAsync({
           address: hookAddress as Address,
@@ -200,14 +326,16 @@ export default function HookManager() {
               hooks: hookAddress as Address,
             },
             ts,
-            result.sqrtPriceX96,
+            sqrtPriceX96,
           ],
         })
-        setTxHash(hash)
+        setInitTxHash(hash)
       }
     } catch (err: unknown) {
       const e = err as { shortMessage?: string; message?: string }
       setTxError(e?.shortMessage || e?.message || 'Initialize failed')
+    } finally {
+      setIsBusy(false)
     }
   }
 
@@ -216,8 +344,10 @@ export default function HookManager() {
   const [removeChecked, setRemoveChecked] = useState<Set<string>>(new Set())
 
   async function handleAddOwners() {
-    if (!validHook || !poolIdHex) return
-    resetTx()
+    if (!validHook || !poolIdHex || isBusy || !isChainSupported(chainId)) return
+    setOpTxHash(undefined)
+    setTxError(null)
+    setIsBusy(true)
     try {
       const addrs = newOwners.split(/[,\n\s]+/).map(s => s.trim()).filter(s => isAddress(s))
       if (addrs.length === 0) throw new Error('No valid addresses')
@@ -225,27 +355,35 @@ export default function HookManager() {
         address: hookAddress as Address, abi: config.abi, functionName: 'addPoolOwners',
         args: [poolIdHex, addrs as Address[]],
       })
-      setTxHash(hash)
+      setOpTxHash(hash)
       setNewOwners('')
     } catch (err: unknown) {
       const e = err as { shortMessage?: string; message?: string }
       setTxError(e?.shortMessage || e?.message || 'Add owners failed')
+    } finally {
+      setIsBusy(false)
     }
   }
 
   async function handleRemoveOwners() {
-    if (!validHook || !poolIdHex || removeChecked.size === 0) return
-    resetTx()
+    if (!validHook || !poolIdHex || removeChecked.size === 0 || isBusy || !isChainSupported(chainId)) return
+    // FIX: 批量移除 owner 是高危操作，添加确认弹窗防止误操作
+    if (!window.confirm(`Remove ${removeChecked.size} pool owner(s)? They can be re-added later by the hook owner.`)) return
+    setOpTxHash(undefined)
+    setTxError(null)
+    setIsBusy(true)
     try {
       const hash = await writeContractAsync({
         address: hookAddress as Address, abi: config.abi, functionName: 'removePoolOwners',
         args: [poolIdHex, Array.from(removeChecked) as Address[]],
       })
-      setTxHash(hash)
+      setOpTxHash(hash)
       setRemoveChecked(new Set())
     } catch (err: unknown) {
       const e = err as { shortMessage?: string; message?: string }
       setTxError(e?.shortMessage || e?.message || 'Remove owners failed')
+    } finally {
+      setIsBusy(false)
     }
   }
 
@@ -260,18 +398,12 @@ export default function HookManager() {
       if (!isNaN(ts)) setNewStartTimestamp(String(ts))
     }
   }
-  const handleStartTimestampChange = (val: string) => {
-    setNewStartTimestamp(val)
-    const ts = parseInt(val)
-    if (!isNaN(ts) && ts > 0) {
-      const d = new Date(ts * 1000)
-      setNewStartDatetime(d.toISOString().slice(0, 16))
-    }
-  }
 
   async function handleSetStartTime() {
-    if (!validHook || !poolIdHex) return
-    resetTx()
+    if (!validHook || !poolIdHex || isBusy || !isChainSupported(chainId)) return
+    setOpTxHash(undefined)
+    setTxError(null)
+    setIsBusy(true)
     try {
       const ts = BigInt(newStartTimestamp)
       if (ts <= 0n) throw new Error('Invalid timestamp')
@@ -279,10 +411,12 @@ export default function HookManager() {
         address: hookAddress as Address, abi: config.abi, functionName: 'setPoolStartTime',
         args: [poolIdHex, ts],
       })
-      setTxHash(hash)
+      setOpTxHash(hash)
     } catch (err: unknown) {
       const e = err as { shortMessage?: string; message?: string }
       setTxError(e?.shortMessage || e?.message || 'Set start time failed')
+    } finally {
+      setIsBusy(false)
     }
   }
 
@@ -290,18 +424,22 @@ export default function HookManager() {
   const [newPosManager, setNewPosManager] = useState('')
 
   async function handleSetPositionManager() {
-    if (!validHook) return
-    resetTx()
+    if (!validHook || isBusy || !isChainSupported(chainId)) return
+    setOpTxHash(undefined)
+    setTxError(null)
+    setIsBusy(true)
     try {
       if (!isAddress(newPosManager)) throw new Error('Invalid address')
       const hash = await writeContractAsync({
         address: hookAddress as Address, abi: config.abi, functionName: 'setPositionManager',
         args: [newPosManager as Address],
       })
-      setTxHash(hash)
+      setOpTxHash(hash)
     } catch (err: unknown) {
       const e = err as { shortMessage?: string; message?: string }
       setTxError(e?.shortMessage || e?.message || 'Set position manager failed')
+    } finally {
+      setIsBusy(false)
     }
   }
 
@@ -311,8 +449,13 @@ export default function HookManager() {
   const [withdrawTokenId, setWithdrawTokenId] = useState('')
 
   async function handleEmergencyWithdraw() {
-    if (!validHook) return
-    resetTx()
+    if (!validHook || isBusy || !isChainSupported(chainId)) return
+    // FIX: 紧急提现是高危操作，添加确认弹窗防止误操作
+    const typeLabel = withdrawType === 'safe' ? 'ETH/ERC20 (Safe)' : withdrawType === 'unsafe' ? 'ERC20 (Unsafe)' : 'ERC721'
+    if (!window.confirm(`Emergency withdraw ${typeLabel} from hook contract?\nToken: ${withdrawToken}`)) return
+    setOpTxHash(undefined)
+    setTxError(null)
+    setIsBusy(true)
     try {
       if (!isAddress(withdrawToken)) throw new Error('Invalid token address')
       let hash: Hex
@@ -333,10 +476,12 @@ export default function HookManager() {
           functionName: 'emergencyWithdrawERC721', args: [withdrawToken as Address, BigInt(withdrawTokenId)],
         })
       }
-      setTxHash(hash)
+      setOpTxHash(hash)
     } catch (err: unknown) {
       const e = err as { shortMessage?: string; message?: string }
       setTxError(e?.shortMessage || e?.message || 'Emergency withdraw failed')
+    } finally {
+      setIsBusy(false)
     }
   }
 
@@ -344,40 +489,50 @@ export default function HookManager() {
   const [newOwnerAddr, setNewOwnerAddr] = useState('')
 
   async function handleTransferOwnership() {
-    if (!validHook) return
-    resetTx()
+    if (!validHook || isBusy || !isChainSupported(chainId)) return
+    // FIX: 所有权转移是不可逆操作，添加确认弹窗防止误操作
+    if (!window.confirm(`Transfer hook ownership to ${newOwnerAddr}?\nThis initiates a two-step transfer.`)) return
+    setOpTxHash(undefined)
+    setTxError(null)
+    setIsBusy(true)
     try {
       if (!isAddress(newOwnerAddr)) throw new Error('Invalid address')
       const hash = await writeContractAsync({
         address: hookAddress as Address, abi: config.abi,
         functionName: 'transferOwnership', args: [newOwnerAddr as Address],
       })
-      setTxHash(hash)
+      setOpTxHash(hash)
     } catch (err: unknown) {
       const e = err as { shortMessage?: string; message?: string }
       setTxError(e?.shortMessage || e?.message || 'Transfer ownership failed')
+    } finally {
+      setIsBusy(false)
     }
   }
 
   async function handleAcceptOwnership() {
-    if (!validHook) return
-    resetTx()
+    if (!validHook || isBusy || !isChainSupported(chainId)) return
+    setOpTxHash(undefined)
+    setTxError(null)
+    setIsBusy(true)
     try {
       const hash = await writeContractAsync({
         address: hookAddress as Address, abi: config.abi,
         functionName: 'acceptOwnership', args: [],
       })
-      setTxHash(hash)
+      setOpTxHash(hash)
     } catch (err: unknown) {
       const e = err as { shortMessage?: string; message?: string }
       setTxError(e?.shortMessage || e?.message || 'Accept ownership failed')
+    } finally {
+      setIsBusy(false)
     }
   }
 
   // Auto-refresh pool status after tx confirmation
   useEffect(() => {
-    if (isTxConfirmed) refetchPoolStatus()
-  }, [isTxConfirmed, refetchPoolStatus])
+    if (isInitConfirmed || isOpConfirmed) refetchPoolStatus()
+  }, [isInitConfirmed, isOpConfirmed, refetchPoolStatus])
 
   if (!isConnected) {
     return <div className="card"><p style={{ textAlign: 'center', color: '#666' }}>Connect your wallet to manage hooks</p></div>
@@ -386,32 +541,6 @@ export default function HookManager() {
   const ownersList = (poolOwners as string[] | undefined) ?? []
   const timestampNum = poolTimestamp ? Number(poolTimestamp) : 0
   const timestampDisplay = timestampNum > 0 ? new Date(timestampNum * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'Not set'
-
-  function CollapsibleSection({ id, label, children }: { id: string; label: string; children: React.ReactNode }) {
-    const isOpen = expanded === id
-    return (
-      <div>
-        <div className="collapsible-header" onClick={() => toggleSection(id)}>
-          <span className="section-label">{label}</span>
-          <span className={`toggle-icon ${isOpen ? 'open' : ''}`}>&#9654;</span>
-        </div>
-        {isOpen && <div className="collapsible-body">{children}</div>}
-      </div>
-    )
-  }
-
-  function TxStatus() {
-    if (!txHash) return null
-    return (
-      <div className={`status-box ${isTxConfirmed ? 'success' : 'pending'}`}>
-        Tx: <a href={explorerTx(chainId, txHash)} target="_blank" rel="noreferrer">
-          {txHash.slice(0, 10)}...{txHash.slice(-8)}
-        </a>
-        {isTxConfirming && ' (confirming...)'}
-        {isTxConfirmed && ' (confirmed)'}
-      </div>
-    )
-  }
 
   return (
     <div className="card">
@@ -462,13 +591,18 @@ export default function HookManager() {
       {/* Pool params — shared by all panels */}
       <div className="section-title" style={{ fontSize: 14 }}>Pool Parameters</div>
       <div className="form-group">
-        <label>Token 0</label>
+        <label>Token A</label>
         <input value={token0} onChange={e => setToken0(e.target.value)} placeholder="0x..." />
       </div>
       <div className="form-group">
-        <label>Token 1</label>
+        <label>Token B</label>
         <input value={token1} onChange={e => setToken1(e.target.value)} placeholder="0x..." />
       </div>
+      {isAddress(token0) && isAddress(token1) && (
+        <div className="hint" style={{ marginBottom: 12, marginTop: -8 }}>
+          Sorted: currency0={sortedSym0}, currency1={sortedSym1}
+        </div>
+      )}
       <div className="form-row">
         <div className="form-group">
           <label>Fee (bips)</label>
@@ -476,7 +610,14 @@ export default function HookManager() {
         </div>
         <div className="form-group">
           <label>Tick Spacing</label>
-          <input value={tickSpacing} onChange={e => setTickSpacing(e.target.value)} />
+          {/* FIX: fee>0 时 tickSpacing 由 feeToTickSpacing 自动计算，手动编辑会导致
+              getPoolId 查到错误的 poolId。fee=0（动态费率池）时解锁让用户手动指定，
+              因为动态费率池的 tickSpacing 由部署者决定，无法从 fee=0 推导。 */}
+          <input value={tickSpacing}
+            readOnly={!isFeeZero}
+            onChange={e => { if (isFeeZero) setTickSpacing(e.target.value) }}
+            style={{ opacity: isFeeZero ? 1 : 0.7 }}
+            placeholder={isFeeZero ? 'Enter tick spacing for dynamic fee pool' : ''} />
         </div>
       </div>
       {poolIdHex && (
@@ -486,13 +627,24 @@ export default function HookManager() {
         </div>
       )}
 
+      {!isChainSupported(chainId) && (
+        <div className="status-box error" style={{ marginBottom: 10 }}>
+          Current chain is not supported. Please switch to BSC, Ethereum, or Base.
+        </div>
+      )}
+
       <hr className="divider" />
 
       {/* 1. Initialize Pool */}
-      <CollapsibleSection id="init" label="Initialize Pool">
+      <CollapsibleSection id="init" label="Initialize Pool" expanded={expanded} onToggle={toggleSection}>
+        <div className="price-row">
+          <span className="price-label">1 {sortedSym0} =</span>
+          <input className="price-input" value={initPrice} onChange={e => handleInitPriceChange(e.target.value)} placeholder="600" />
+          <span className="price-label">{sortedSym1}</span>
+        </div>
         <div className="form-group">
-          <label>Price (Token1 per Token0)</label>
-          <input value={initPrice} onChange={e => setInitPrice(e.target.value)} placeholder="600" />
+          <label>sqrtPriceX96</label>
+          <input value={initSqrtPriceX96} readOnly style={{ fontSize: 12, opacity: 0.7 }} />
         </div>
         <div className="form-group">
           <label>Start Time (UTC)</label>
@@ -500,19 +652,22 @@ export default function HookManager() {
         </div>
         <div className="form-group">
           <label>Unix Timestamp</label>
-          <input value={initTimestamp} onChange={e => handleInitTimestampChange(e.target.value)} placeholder="e.g. 1712500000" />
+          <input value={initTimestamp} readOnly style={{ opacity: 0.7 }} />
         </div>
+        {!decimalsReady && isAddress(token0) && isAddress(token1) && (
+          <div className="hint" style={{ color: '#ffb74d', marginBottom: 8 }}>Loading token decimals...</div>
+        )}
         <button
           className="btn btn-primary"
-          disabled={!isOwner || !poolParamsValid || !initTimestamp}
+          disabled={!isOwner || !poolParamsValid || !initTimestamp || !decimalsReady || isBusy || !isChainSupported(chainId)}
           onClick={handleInitializePool}
         >
-          {!isOwner ? 'Not Hook Owner' : 'Initialize Pool'}
+          {isBusy ? 'Sending...' : !isOwner ? 'Not Hook Owner' : !decimalsReady ? 'Waiting for token info...' : 'Initialize Pool'}
         </button>
       </CollapsibleSection>
 
       {/* 2. Pool Status */}
-      <CollapsibleSection id="status" label="Pool Status">
+      <CollapsibleSection id="status" label="Pool Status" expanded={expanded} onToggle={toggleSection}>
         {!hasPoolId ? (
           <div className="hint">Enter valid pool parameters above to query status</div>
         ) : (
@@ -540,8 +695,8 @@ export default function HookManager() {
                 Pool Owners ({ownersList.length})
               </div>
               {ownersList.length === 0 && <div className="hint">No pool owners</div>}
-              {ownersList.map((addr, i) => (
-                <div key={i} className="whitelist-item">
+              {ownersList.map((addr) => (
+                <div key={addr} className="whitelist-item">
                   <AddressLink chainId={chainId} address={addr} />
                 </div>
               ))}
@@ -552,7 +707,7 @@ export default function HookManager() {
       </CollapsibleSection>
 
       {/* 3. Whitelist Management */}
-      <CollapsibleSection id="whitelist" label="Whitelist Management">
+      <CollapsibleSection id="whitelist" label="Whitelist Management" expanded={expanded} onToggle={toggleSection}>
         {!hasPoolId ? (
           <div className="hint">Enter valid pool parameters above first</div>
         ) : (
@@ -571,8 +726,8 @@ export default function HookManager() {
                 placeholder="0x..."
               />
             </div>
-            <button className="btn btn-primary" disabled={!isOwner || !newOwners.trim()} onClick={handleAddOwners}>
-              {!isOwner ? 'Not Hook Owner' : 'Add Pool Owners'}
+            <button className="btn btn-primary" disabled={!isOwner || !newOwners.trim() || isBusy || !isChainSupported(chainId)} onClick={handleAddOwners}>
+              {isBusy ? 'Sending...' : !isOwner ? 'Not Hook Owner' : 'Add Pool Owners'}
             </button>
 
             {ownersList.length > 0 && (
@@ -580,22 +735,22 @@ export default function HookManager() {
                 <div className="ps-label" style={{ marginTop: 16, marginBottom: 4, color: '#888', fontSize: 11 }}>
                   Current Owners — check to remove
                 </div>
-                {ownersList.map((addr, i) => (
-                  <div key={i} className="whitelist-item">
+                {ownersList.map((addr) => (
+                  <div key={addr} className="whitelist-item">
                     <input
                       type="checkbox"
                       checked={removeChecked.has(addr)}
                       onChange={e => {
                         const next = new Set(removeChecked)
-                        e.target.checked ? next.add(addr) : next.delete(addr)
+                        if (e.target.checked) next.add(addr); else next.delete(addr)
                         setRemoveChecked(next)
                       }}
                     />
                     <AddressLink chainId={chainId} address={addr} />
                   </div>
                 ))}
-                <button className="btn btn-danger" disabled={!isOwner || removeChecked.size === 0} onClick={handleRemoveOwners} style={{ marginTop: 8 }}>
-                  {!isOwner ? 'Not Hook Owner' : `Remove ${removeChecked.size} Owner(s)`}
+                <button className="btn btn-danger" disabled={!isOwner || removeChecked.size === 0 || isBusy || !isChainSupported(chainId)} onClick={handleRemoveOwners} style={{ marginTop: 8 }}>
+                  {isBusy ? 'Sending...' : !isOwner ? 'Not Hook Owner' : `Remove ${removeChecked.size} Owner(s)`}
                 </button>
               </>
             )}
@@ -604,7 +759,7 @@ export default function HookManager() {
       </CollapsibleSection>
 
       {/* 4. Set Pool Start Time */}
-      <CollapsibleSection id="startTime" label="Set Pool Start Time">
+      <CollapsibleSection id="startTime" label="Set Pool Start Time" expanded={expanded} onToggle={toggleSection}>
         {!hasPoolId ? (
           <div className="hint">Enter valid pool parameters above first</div>
         ) : (
@@ -615,28 +770,28 @@ export default function HookManager() {
             </div>
             <div className="form-group">
               <label>Unix Timestamp</label>
-              <input value={newStartTimestamp} onChange={e => handleStartTimestampChange(e.target.value)} placeholder="e.g. 1712500000" />
+              <input value={newStartTimestamp} readOnly style={{ opacity: 0.7 }} />
             </div>
-            <button className="btn btn-primary" disabled={!isOwner || !newStartTimestamp} onClick={handleSetStartTime}>
-              {!isOwner ? 'Not Hook Owner' : 'Set Pool Start Time'}
+            <button className="btn btn-primary" disabled={!isOwner || !newStartTimestamp || isBusy || !isChainSupported(chainId)} onClick={handleSetStartTime}>
+              {isBusy ? 'Sending...' : !isOwner ? 'Not Hook Owner' : 'Set Pool Start Time'}
             </button>
           </>
         )}
       </CollapsibleSection>
 
       {/* 5. Set Position Manager */}
-      <CollapsibleSection id="posManager" label="Set Position Manager">
+      <CollapsibleSection id="posManager" label="Set Position Manager" expanded={expanded} onToggle={toggleSection}>
         <div className="form-group">
           <label>New Position Manager Address</label>
           <input value={newPosManager} onChange={e => setNewPosManager(e.target.value)} placeholder="0x..." />
         </div>
-        <button className="btn btn-primary" disabled={!isOwner || !isAddress(newPosManager)} onClick={handleSetPositionManager}>
-          {!isOwner ? 'Not Hook Owner' : 'Set Position Manager'}
+        <button className="btn btn-primary" disabled={!isOwner || !isAddress(newPosManager) || isBusy || !isChainSupported(chainId)} onClick={handleSetPositionManager}>
+          {isBusy ? 'Sending...' : !isOwner ? 'Not Hook Owner' : 'Set Position Manager'}
         </button>
       </CollapsibleSection>
 
       {/* 6. Emergency Withdraw */}
-      <CollapsibleSection id="emergency" label="Emergency Withdraw">
+      <CollapsibleSection id="emergency" label="Emergency Withdraw" expanded={expanded} onToggle={toggleSection}>
         <div className="radio-group">
           <label><input type="radio" name="withdrawType" checked={withdrawType === 'safe'} onChange={() => setWithdrawType('safe')} /> ETH/ERC20 (Safe)</label>
           <label><input type="radio" name="withdrawType" checked={withdrawType === 'unsafe'} onChange={() => setWithdrawType('unsafe')} /> ERC20 (Unsafe)</label>
@@ -652,19 +807,19 @@ export default function HookManager() {
             <input value={withdrawTokenId} onChange={e => setWithdrawTokenId(e.target.value)} placeholder="e.g. 12345" />
           </div>
         )}
-        <button className="btn btn-danger" disabled={!isOwner || !isAddress(withdrawToken)} onClick={handleEmergencyWithdraw}>
-          {!isOwner ? 'Not Hook Owner' : 'Emergency Withdraw'}
+        <button className="btn btn-danger" disabled={!isOwner || !isAddress(withdrawToken) || isBusy || !isChainSupported(chainId)} onClick={handleEmergencyWithdraw}>
+          {isBusy ? 'Sending...' : !isOwner ? 'Not Hook Owner' : 'Emergency Withdraw'}
         </button>
       </CollapsibleSection>
 
       {/* 7. Ownership Transfer */}
-      <CollapsibleSection id="ownership" label="Ownership Transfer">
+      <CollapsibleSection id="ownership" label="Ownership Transfer" expanded={expanded} onToggle={toggleSection}>
         <div className="form-group">
           <label>New Owner Address</label>
           <input value={newOwnerAddr} onChange={e => setNewOwnerAddr(e.target.value)} placeholder="0x..." />
         </div>
-        <button className="btn btn-primary" disabled={!isOwner || !isAddress(newOwnerAddr)} onClick={handleTransferOwnership}>
-          {!isOwner ? 'Not Hook Owner' : 'Transfer Ownership'}
+        <button className="btn btn-primary" disabled={!isOwner || !isAddress(newOwnerAddr) || isBusy || !isChainSupported(chainId)} onClick={handleTransferOwnership}>
+          {isBusy ? 'Sending...' : !isOwner ? 'Not Hook Owner' : 'Transfer Ownership'}
         </button>
         {isPendingOwner && (
           <>
@@ -672,15 +827,32 @@ export default function HookManager() {
             <div className="hint" style={{ marginBottom: 8, color: '#ffb74d' }}>
               You are the pending owner. Click below to accept ownership.
             </div>
-            <button className="btn btn-primary" onClick={handleAcceptOwnership}>
-              Accept Ownership
+            <button className="btn btn-primary" disabled={isBusy || !isChainSupported(chainId)} onClick={handleAcceptOwnership}>
+              {isBusy ? 'Sending...' : 'Accept Ownership'}
             </button>
           </>
         )}
       </CollapsibleSection>
 
       {/* Transaction status */}
-      <TxStatus />
+      {initTxHash && (
+        <div className={`status-box ${isInitConfirmed ? 'success' : 'pending'}`}>
+          Init Tx: <a href={explorerTx(chainId, initTxHash)} target="_blank" rel="noreferrer">
+            {initTxHash.slice(0, 10)}...{initTxHash.slice(-8)}
+          </a>
+          {isInitConfirming && ' (confirming...)'}
+          {isInitConfirmed && ' (confirmed)'}
+        </div>
+      )}
+      {opTxHash && (
+        <div className={`status-box ${isOpConfirmed ? 'success' : 'pending'}`}>
+          Tx: <a href={explorerTx(chainId, opTxHash)} target="_blank" rel="noreferrer">
+            {opTxHash.slice(0, 10)}...{opTxHash.slice(-8)}
+          </a>
+          {isOpConfirming && ' (confirming...)'}
+          {isOpConfirmed && ' (confirmed)'}
+        </div>
+      )}
       {txError && <div className="status-box error">{txError}</div>}
     </div>
   )

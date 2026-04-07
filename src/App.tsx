@@ -23,19 +23,20 @@ function App() {
           Tools
         </button>
       </div>
-      {tab === 'liquidity' && (
-        <>
-          <ConnectButton />
-          <AddLiquidity />
-        </>
-      )}
-      {tab === 'hooks' && (
-        <>
-          <ConnectButton />
-          <HookManager />
-        </>
-      )}
-      {tab === 'tools' && <Tools />}
+      {/* FIX: 用 CSS display:none 代替条件渲染，切换 tab 时组件不卸载，
+          进行中的交易状态（txHash、activeStep）不会丢失，避免用户误以为交易未发送而重复提交。 */}
+      {/* FIX: ConnectButton 提取到 tab 外部共享，避免 display:none 下两个实例同时挂载
+          各自独立发起 useBalance 等 RPC 请求，浪费带宽并可能触发公共 RPC 限速。 */}
+      {tab !== 'tools' && <ConnectButton />}
+      <div style={{ display: tab === 'liquidity' ? 'block' : 'none' }}>
+        <AddLiquidity />
+      </div>
+      <div style={{ display: tab === 'hooks' ? 'block' : 'none' }}>
+        <HookManager />
+      </div>
+      <div style={{ display: tab === 'tools' ? 'block' : 'none' }}>
+        <Tools />
+      </div>
       <footer className="app-footer">build {__COMMIT_HASH__}</footer>
     </div>
   )

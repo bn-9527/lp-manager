@@ -94,17 +94,19 @@ export const HOOK_CONFIGS: Record<HookProtocol, HookProtocolConfig> = {
     defaultAddresses: {
       56: '0xB0b313A71F597079505243564F139030fA93a31c',
     },
-    abi: [...sharedManagementAbi, ...clInitializePoolAbi],
+    abi: [...sharedManagementAbi, ...clInitializePoolAbi] as const,
     needsPoolManager: true,
   },
   'uni-v4': {
     protocol: 'uni-v4',
     label: 'Uni V4',
+    // NOTE: 目前仅 BSC 部署了 V4AlphaHook。Ethereum/Base 尚无部署，
+    // 用户需手动输入 hook 地址。contracts.ts 中 Ethereum/Base 仍标记为支持链，
+    // 因为 AddLiquidity（标准 V4 PositionManager 操作）不依赖自定义 hook 地址。
     defaultAddresses: {
-      56: '0xB0b05d1e6e848FAD0D2E4798e1e880a1F0300B0b',
-      8453: '0xB0b98a79A2448F8E1C0C8E247dc638685502D0Bb',
+      56: '0xb0B41e49082B9Ae0fFc6387abf3690cAfF972880',
     },
-    abi: [...sharedManagementAbi, ...v4InitializePoolAbi],
+    abi: [...sharedManagementAbi, ...v4InitializePoolAbi] as const,
     needsPoolManager: false,
   },
 }

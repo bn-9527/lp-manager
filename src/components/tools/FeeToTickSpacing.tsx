@@ -1,7 +1,5 @@
 import { useState } from 'react'
-import { feeToTickSpacing } from '../../utils/encoder'
-
-const FEE_PRESETS: Record<number, number> = { 100: 1, 200: 4, 300: 6, 400: 8, 500: 10, 3000: 60, 10000: 200 }
+import { feeToTickSpacing, FEE_PRESETS } from '../../utils/encoder'
 const PRESET_FEE_LIST = [100, 200, 250, 300, 400, 500, 3000, 10000]
 
 function percentToFee(pct: string): number {

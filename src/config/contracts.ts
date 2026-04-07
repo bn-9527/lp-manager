@@ -35,10 +35,16 @@ export const CHAIN_CONFIG: Record<number, ChainConfig> = {
   },
 }
 
+export const ZERO_ADDR = '0x0000000000000000000000000000000000000000' as const
+
 export const DEFAULT_CHAIN_ID = 56
 
 export function getChainConfig(chainId: number | undefined): ChainConfig {
   return CHAIN_CONFIG[chainId ?? DEFAULT_CHAIN_ID] ?? CHAIN_CONFIG[DEFAULT_CHAIN_ID]
+}
+
+export function isChainSupported(chainId: number | undefined): boolean {
+  return chainId !== undefined && chainId in CHAIN_CONFIG
 }
 
 export function explorerAddress(chainId: number | undefined, address: string) {
