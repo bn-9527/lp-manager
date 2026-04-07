@@ -84,9 +84,8 @@ export function createWagmiMockFactory() {
 
       // Permit2 allowance 返回 tuple 格式
       if (fn === 'allowance' && args.abi && Array.isArray(args.abi)) {
-        const hasOutputTuple = args.abi.some(
-          (item: { name?: string; outputs?: { name?: string }[] }) =>
-            item.name === 'allowance' && item.outputs && item.outputs.length === 3,
+        const hasOutputTuple = (args.abi as { name?: string; outputs?: { name?: string }[] }[]).some(
+          (item) => item.name === 'allowance' && item.outputs && item.outputs.length === 3,
         )
         if (hasOutputTuple) {
           return { data: PERMIT2_ALLOWANCE, isLoading: false, isError: false, refetch: vi.fn() }

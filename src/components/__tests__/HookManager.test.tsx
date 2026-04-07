@@ -21,8 +21,8 @@ function defaultReadContract(args?: { functionName?: string; abi?: unknown[]; ad
   const fn = args?.functionName
   if (!fn || !args?.address) return { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
   if (fn === 'allowance' && args.abi && Array.isArray(args.abi)) {
-    const isPermit2 = args.abi.some(
-      (item: Record<string, unknown>) => item.name === 'allowance' && Array.isArray(item.outputs) && item.outputs.length === 3,
+    const isPermit2 = (args.abi as Record<string, unknown>[]).some(
+      (item) => item.name === 'allowance' && Array.isArray(item.outputs) && item.outputs.length === 3,
     )
     if (isPermit2) return { data: [(1n << 160n) - 1n, 2000000000, 0], isLoading: false, isError: false, refetch: vi.fn() }
   }
