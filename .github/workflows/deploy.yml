@@ -21,7 +21,10 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
-      - run: npm ci
+      # FIX: 本地 node 25 / npm 11 生成的 lockfile 与 CI node 22 的 npm 不兼容，
+      # npm ci 报 "package.json and package-lock.json are in sync" 错误。
+      # 使用 npm install 兼容跨版本 lockfile。
+      - run: npm install
       - run: npm run lint
       - run: npm run test
       - run: npm run build
