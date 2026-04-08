@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import {
   useAccount,
   useWriteContract,
@@ -25,35 +25,10 @@ import {
   priceToTick, tickToPrice, calcAmount1FromAmount0, calcAmount0FromAmount1,
   feeToTickSpacing, getLiquidityForAmounts,
 } from '../utils/encoder'
-import { HOOK_CONFIGS } from '../config/hooks'
 import AddressLink from './AddressLink'
+import { POOL_DEFAULTS, DEFAULT_POOL_DEFAULTS } from '../config/defaults'
 
 const MAX_SLIPPAGE_PCT = 50
-
-const DEFAULTS: Record<number, { hooks: string; tokenA: string; tokenB: string; fee: string; price: string; amountA: string; slippage: string }> = {
-  // BSC — hook 地址从 HOOK_CONFIGS 读取，避免与 hooks.ts 重复定义导致更新遗漏
-  56: {
-    hooks: HOOK_CONFIGS['uni-v4'].defaultAddresses[56] ?? ZERO_ADDR,
-    tokenA: '0x0000000000000000000000000000000000000000',
-    tokenB: '0xCBD7C163818189Ceb07B50Fd4974E78B029fc487',
-    fee: '500', price: '600', amountA: '0.05', slippage: '0.1',
-  },
-  // Ethereum
-  1: {
-    hooks: '0x0000000000000000000000000000000000000000',
-    tokenA: '0x0000000000000000000000000000000000000000',
-    tokenB: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
-    fee: '500', price: '2000', amountA: '0.01', slippage: '0.1',
-  },
-  // Base
-  8453: {
-    hooks: '0x0000000000000000000000000000000000000000',
-    tokenA: '0x0000000000000000000000000000000000000000',
-    tokenB: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-    fee: '500', price: '2000', amountA: '0.01', slippage: '0.1',
-  },
-}
-const DEFAULT_CHAIN_DEFAULTS = DEFAULTS[56]
 
 function isValidAddr(a: string) { return isAddress(a) }
 function isNative(a: string) { return a.toLowerCase() === ZERO_ADDR }
@@ -137,12 +112,12 @@ function TokenInput({ label, value, onChange, info, addr, chainId }: { label: st
 
 type TxStep = 'erc20Approve' | 'permit2Approve' | 'addLiquidity'
 
-export default function AddLiquidity() {
+export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => void } = {}) {
   const { address, isConnected, chain } = useAccount()
   const wagmiConfig = useConfig()
   const chainId = chain?.id
   const chainConfig = getChainConfig(chainId)
-  const chainDefaults = DEFAULTS[chainId ?? 56] ?? DEFAULT_CHAIN_DEFAULTS
+  const chainDefaults = POOL_DEFAULTS[chainId ?? 56] ?? DEFAULT_POOL_DEFAULTS
 
   const [hooks, setHooks] = useState(chainDefaults.hooks)
   const [tokenA, setTokenA] = useState(chainDefaults.tokenA)
@@ -154,9 +129,12 @@ export default function AddLiquidity() {
   const [tickSpacing, setTickSpacing] = useState('10')
   const feeNum = parseInt(fee)
   const isFeeZero = feeNum === 0
+  // FIX: 在 effect 内部重新 parseInt，避免 exhaustive-deps 警告，
+  // 与 HookManager 保持一致的处理方式。
   useEffect(() => {
-    if (!isNaN(feeNum) && feeNum > 0) setTickSpacing(String(feeToTickSpacing(feeNum)))
-  }, [fee]) // eslint-disable-line react-hooks/exhaustive-deps -- feeNum is derived from fee
+    const f = parseInt(fee)
+    if (!isNaN(f) && f > 0) setTickSpacing(String(feeToTickSpacing(f)))
+  }, [fee])
   const [price, setPrice] = useState(chainDefaults.price)
   const [amountA, setAmountA] = useState(chainDefaults.amountA)
   const [amountB, setAmountB] = useState('')
@@ -165,7 +143,7 @@ export default function AddLiquidity() {
   // FIX: useState 初始值只在首次挂载时生效，切换链后表单仍保留旧链地址，
   // 用户可能在 Ethereum 上误用 BSC 的 hook/token 地址提交交易。
   useEffect(() => {
-    const d = DEFAULTS[chainId ?? 56] ?? DEFAULT_CHAIN_DEFAULTS
+    const d = POOL_DEFAULTS[chainId ?? 56] ?? DEFAULT_POOL_DEFAULTS
     setHooks(d.hooks)
     setTokenA(d.tokenA)
     setTokenB(d.tokenB)
@@ -189,10 +167,19 @@ export default function AddLiquidity() {
   const [maxPrice, setMaxPrice] = useState('')
 
   const [activeStep, setActiveStep] = useState<TxStep | null>(null)
+  const [isBusy, setIsBusy] = useState(false)
   const [erc20ApproveTxHash, setErc20ApproveTxHash] = useState<Hex | undefined>()
   const [permit2ApproveTxHash, setPermit2ApproveTxHash] = useState<Hex | undefined>()
   const [addLiquidityTxHash, setAddLiquidityTxHash] = useState<Hex | undefined>()
   const [error, setError] = useState<string | null>(null)
+
+  // FIX: async 闭包中的 chainId/address 是 render 时的快照（stale closure），
+  // await 恢复后即使用户已切换链/账户，闭包值仍不变，导致切换检测失效。
+  // 使用 useRef 跟踪最新值，async 函数读取 ref.current 才能检测到运行时变化。
+  const chainIdRef = useRef(chainId)
+  const addressRef = useRef(address)
+  useEffect(() => { chainIdRef.current = chainId }, [chainId])
+  useEffect(() => { addressRef.current = address }, [address])
 
   const infoA = useTokenInfo(tokenA, chainId, address, amountA)
   const infoB = useTokenInfo(tokenB, chainId, address, amountB)
@@ -249,21 +236,31 @@ export default function AddLiquidity() {
   // Snap both prices to tick-aligned values on blur of either field
   const snapPrices = useCallback(() => {
     if (fullRange || !minPrice || !maxPrice || !decsLoaded) return
-    const alignedLo = tickToPrice(computedTicks.tickLower, sorted.dec0!, sorted.dec1!)
-    const alignedHi = tickToPrice(computedTicks.tickUpper, sorted.dec0!, sorted.dec1!)
-    const dispLo = sorted.swapped ? 1 / alignedHi : alignedLo
-    const dispHi = sorted.swapped ? 1 / alignedLo : alignedHi
+    // FIX: swapped 时用 tickToPrice(..., invert=true) 在 BigNumber 高精度域做倒数，
+    // 避免浮点 1/price 对非终止小数（如 1/3000）丢精度，与 computedTicks 的 BigInt 路径一致。
+    const dispLo = sorted.swapped
+      ? tickToPrice(computedTicks.tickUpper, sorted.dec0!, sorted.dec1!, true)
+      : tickToPrice(computedTicks.tickLower, sorted.dec0!, sorted.dec1!)
+    const dispHi = sorted.swapped
+      ? tickToPrice(computedTicks.tickLower, sorted.dec0!, sorted.dec1!, true)
+      : tickToPrice(computedTicks.tickUpper, sorted.dec0!, sorted.dec1!)
     if (dispLo > 0 && isFinite(dispLo)) setMinPrice(formatNum(dispLo))
     if (dispHi > 0 && isFinite(dispHi)) setMaxPrice(formatNum(dispHi))
   }, [fullRange, minPrice, maxPrice, computedTicks, sorted, decsLoaded])
 
   // Aligned price display for full range
+  // FIX: swapped 时用 tickToPrice(..., invert=true) 避免浮点 1/price 精度丢失
   const fullRangePrices = useMemo(() => {
     if (!fullRange || !decsLoaded) return null
     const t = getFullRangeTicks(tsNum)
-    let lo = tickToPrice(t.tickLower, sorted.dec0!, sorted.dec1!)
-    let hi = tickToPrice(t.tickUpper, sorted.dec0!, sorted.dec1!)
-    if (sorted.swapped) { [lo, hi] = [1 / hi, 1 / lo] }
+    let lo: number, hi: number
+    if (sorted.swapped) {
+      lo = tickToPrice(t.tickUpper, sorted.dec0!, sorted.dec1!, true)
+      hi = tickToPrice(t.tickLower, sorted.dec0!, sorted.dec1!, true)
+    } else {
+      lo = tickToPrice(t.tickLower, sorted.dec0!, sorted.dec1!)
+      hi = tickToPrice(t.tickUpper, sorted.dec0!, sorted.dec1!)
+    }
     return { low: lo < 0.0001 ? '~0' : lo.toPrecision(4), high: hi > 1e15 ? '~∞' : hi.toPrecision(4) }
   }, [fullRange, tsNum, sorted, decsLoaded])
 
@@ -337,7 +334,7 @@ export default function AddLiquidity() {
   const tokensToApprove = tokensNeedingApprove.map(t => t.addr)
 
   async function handleApproveTokens() {
-    if (!address) return
+    if (!address || isBusy) return
     // FIX: 无限授权(MAX_UINT256 → Permit2, UINT160_MAX → PositionManager) 是 Permit2 架构标准模式，
     // 但用户可能不了解此机制。弹窗确认避免用户在不知情下授出无限额度。
     const confirmed = window.confirm(
@@ -346,11 +343,12 @@ export default function AddLiquidity() {
       'This is the standard Uniswap V4 approval flow. Continue?'
     )
     if (!confirmed) return
+    setIsBusy(true); onBusy?.(true)
     setError(null); setErc20ApproveTxHash(undefined); setPermit2ApproveTxHash(undefined)
-    // FIX: 快照当前 chainId 和 address，循环中每个 await 恢复后检查是否变化，
-    // 防止用户在 approve 等待期间切换链/账户导致后续交易发到错误链或错误账户。
-    const startChainId = chainId
-    const startAddress = address
+    // FIX: 使用 chainIdRef/addressRef 检测链/账户切换，而非闭包捕获的 chainId/address。
+    // 闭包值在 async await 恢复后仍是 render 时的快照（stale closure），无法感知变化。
+    const startChainId = chainIdRef.current
+    const startAddress = addressRef.current
     try {
       for (const tkn of tokensToApprove) {
         // Step 1: ERC20 approve → Permit2 (MAX_UINT256: Permit2 架构下的标准一次性无限授权)
@@ -360,7 +358,7 @@ export default function AddLiquidity() {
         // FIX: 必须等待 ERC20 approve 上链确认后再发 Permit2 approve，
         // 否则 Permit2 合约读到的 allowance 仍为 0，导致交易 revert 浪费 gas。
         await waitForTxReceipt(wagmiConfig, { hash: h1 })
-        if (chain?.id !== startChainId || address !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
+        if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
 
         // Step 2: Permit2 approve → PositionManager
         setActiveStep('permit2Approve')
@@ -370,14 +368,16 @@ export default function AddLiquidity() {
         const h2 = await writeContractAsync({ address: chainConfig.permit2, abi: permit2Abi, functionName: 'approve', args: [tkn as Address, chainConfig.positionManager, UINT160_MAX, Number(UINT48_MAX)] })
         setPermit2ApproveTxHash(h2)
         await waitForTxReceipt(wagmiConfig, { hash: h2 })
-        if (chain?.id !== startChainId || address !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
+        if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
       }
       setActiveStep(null)
     } catch (err: unknown) { const e = err as { shortMessage?: string; message?: string }; setError(e?.shortMessage || e?.message || 'Approve failed'); setActiveStep(null) }
+    finally { setIsBusy(false); onBusy?.(false) }
   }
 
   async function handleAddLiquidity() {
-    if (!address) return
+    if (!address || isBusy) return
+    setIsBusy(true); onBusy?.(true)
     setError(null); setAddLiquidityTxHash(undefined)
     try {
       setActiveStep('addLiquidity')
@@ -445,10 +445,20 @@ export default function AddLiquidity() {
         tickLower: computedTicks.tickLower, tickUpper: computedTicks.tickUpper,
         liquidity, amount0Max, amount1Max, recipient: address, deadline,
       })
+      // FIX: 必须检测链/账户切换，防止 calldata 编码的是旧链参数但交易发到新链
+      const startChainId = chainIdRef.current
+      const startAddress = addressRef.current
       const hash = await sendTransactionAsync({ to: chainConfig.positionManager, data: calldata, value })
       setAddLiquidityTxHash(hash)
       setActiveStep(null)
+      // FIX: 必须等待交易确认后再释放 isBusy，否则交易在 mempool 中用户可重复点击，
+      // 发送多笔相同交易浪费 gas。handleApproveTokens 已正确 await 确认，此处保持一致。
+      await waitForTxReceipt(wagmiConfig, { hash })
+      if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) {
+        setError('Chain or account changed during transaction')
+      }
     } catch (err: unknown) { const e = err as { shortMessage?: string; message?: string }; setError(e?.shortMessage || e?.message || 'Add liquidity failed'); setActiveStep(null) }
+    finally { setIsBusy(false); onBusy?.(false) }
   }
 
   // FIX: 交易确认后刷新 token 余额和授权状态，避免 UI 显示过期数据。
@@ -578,7 +588,7 @@ export default function AddLiquidity() {
           {tokenInfoLoading ? 'Loading token info...' : 'Failed to load token info — check addresses and RPC'}
         </div>
       ) : tokensToApprove.length > 0 ? (
-        <button className="btn btn-secondary" onClick={handleApproveTokens} disabled={activeStep === 'erc20Approve' || activeStep === 'permit2Approve' || isWritePending}>
+        <button className="btn btn-secondary" onClick={handleApproveTokens} disabled={isBusy || activeStep === 'erc20Approve' || activeStep === 'permit2Approve' || isWritePending}>
           {activeStep === 'erc20Approve' ? 'Approving ERC20...' : activeStep === 'permit2Approve' ? 'Approving Permit2...' : `Approve ${tokensNeedingApprove.map(t => t.info.symbol ?? '???').join(' + ')}`}
         </button>
       ) : (
@@ -587,7 +597,7 @@ export default function AddLiquidity() {
       <TxStatus hash={erc20ApproveTxHash} confirming={isErc20Confirming} confirmed={isErc20Confirmed} label="ERC20 Approve" chainId={chainId} />
       <TxStatus hash={permit2ApproveTxHash} confirming={isPermit2Confirming} confirmed={isPermit2Confirmed} label="Permit2 Approve" chainId={chainId} />
 
-      <button className="btn btn-primary" onClick={handleAddLiquidity} disabled={activeStep === 'addLiquidity' || isSendPending || !tokenInfoReady || !isChainSupported(chainId)}>
+      <button className="btn btn-primary" onClick={handleAddLiquidity} disabled={isBusy || activeStep === 'addLiquidity' || isSendPending || !tokenInfoReady || !isChainSupported(chainId)}>
         {activeStep === 'addLiquidity' ? 'Sending...' : `Add Liquidity (${amountA} ${symbolA} + ${amountB ? parseFloat(amountB).toFixed(4) : '?'} ${symbolB})`}
       </button>
       <TxStatus hash={addLiquidityTxHash} confirming={isAddLiqConfirming} confirmed={isAddLiqConfirmed} label="Add Liquidity" chainId={chainId} />

@@ -8,10 +8,12 @@ import './index.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <WagmiProvider config={config}>
+    {/* FIX: wagmi 3 文档要求 WagmiProvider 在外层，QueryClientProvider 在内层，
+        确保 WagmiProvider 初始化时 QueryClient 已就绪 */}
+    <WagmiProvider config={config}>
+      <QueryClientProvider client={queryClient}>
         <App />
-      </WagmiProvider>
-    </QueryClientProvider>
+      </QueryClientProvider>
+    </WagmiProvider>
   </StrictMode>,
 )

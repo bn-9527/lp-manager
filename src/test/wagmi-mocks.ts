@@ -20,7 +20,7 @@ export const TEST_TX_HASH = '0xabc123def4567890123456789012345678901234567890123
 export const TEST_POOL_ID = '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef' as const
 
 // useReadContract 根据 functionName 返回的默认值
-const READ_CONTRACT_DEFAULTS: Record<string, unknown> = {
+export const READ_CONTRACT_DEFAULTS: Record<string, unknown> = {
   symbol: 'TOKEN',
   decimals: 18,
   balanceOf: parseEther('100'),
@@ -41,7 +41,27 @@ const READ_CONTRACT_DEFAULTS: Record<string, unknown> = {
 }
 
 // Permit2 allowance 返回 [amount, expiration, nonce] tuple
-const PERMIT2_ALLOWANCE = [(1n << 160n) - 1n, 2000000000, 0]
+export const PERMIT2_ALLOWANCE = [(1n << 160n) - 1n, 2000000000, 0]
+
+/**
+ * 创建 useReadContract 的 mock 实现。
+ * extraDefaults 可覆盖或扩展 READ_CONTRACT_DEFAULTS（如测试文件只需子集时传空对象即可）。
+ */
+export function createDefaultReadContract(extraDefaults?: Record<string, unknown>) {
+  const merged = extraDefaults ? { ...READ_CONTRACT_DEFAULTS, ...extraDefaults } : READ_CONTRACT_DEFAULTS
+  return (args?: { functionName?: string; abi?: unknown[]; address?: string }) => {
+    const fn = args?.functionName
+    if (!fn || !args?.address) return { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
+    if (fn === 'allowance' && args.abi && Array.isArray(args.abi)) {
+      const isPermit2 = (args.abi as { name?: string; outputs?: unknown[] }[]).some(
+        (item) => item.name === 'allowance' && item.outputs && item.outputs.length === 3,
+      )
+      if (isPermit2) return { data: PERMIT2_ALLOWANCE, isLoading: false, isError: false, refetch: vi.fn() }
+    }
+    const data = merged[fn]
+    return { data: data ?? undefined, isLoading: false, isError: false, refetch: vi.fn() }
+  }
+}
 
 export const mockWriteContractAsync = vi.fn().mockResolvedValue(TEST_TX_HASH)
 export const mockSendTransactionAsync = vi.fn().mockResolvedValue(TEST_TX_HASH)

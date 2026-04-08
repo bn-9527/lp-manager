@@ -10,37 +10,9 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
 } from 'wagmi'
+import { TEST_USER, TEST_TX_HASH, TEST_POOL_ID, createDefaultReadContract } from '../../test/wagmi-mocks'
 
-const TEST_USER = '0xEe7b429Ea01F76102f053213463D4e95D5D24AE8'
-const TEST_TX_HASH = '0xabc123def456789012345678901234567890123456789012345678901234abcd'
-const TEST_POS_MGR = '0x7A4a5c919aE2541AeD11041A1AEeE68f1287f95b'
-const TEST_POOL_ID = '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef'
-
-// Default useReadContract implementation (mirrors setup.ts)
-function defaultReadContract(args?: { functionName?: string; abi?: unknown[]; address?: string }) {
-  const fn = args?.functionName
-  if (!fn || !args?.address) return { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
-  if (fn === 'allowance' && args.abi && Array.isArray(args.abi)) {
-    const isPermit2 = (args.abi as Record<string, unknown>[]).some(
-      (item) => item.name === 'allowance' && Array.isArray(item.outputs) && item.outputs.length === 3,
-    )
-    if (isPermit2) return { data: [(1n << 160n) - 1n, 2000000000, 0], isLoading: false, isError: false, refetch: vi.fn() }
-  }
-  const defaults: Record<string, unknown> = {
-    symbol: 'TOKEN', decimals: 18, balanceOf: parseEther('100'),
-    allowance: 2n ** 256n - 1n,
-    owner: TEST_USER,
-    pendingOwner: '0x0000000000000000000000000000000000000000',
-    positionManager: TEST_POS_MGR,
-    getPoolId: TEST_POOL_ID,
-    isPoolEnabled: true, isPoolStarted: false,
-    poolStartedTimestamp: 1800000000n,
-    getPoolOwners: [TEST_USER], isPoolOwner: true,
-    poolManager: '0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b',
-    getPoolKeyParameters: '0x0000000000000000000000000000000000000000000000000000000000c80014',
-  }
-  return { data: defaults[fn] ?? undefined, isLoading: false, isError: false, refetch: vi.fn() }
-}
+const defaultReadContract = createDefaultReadContract()
 
 // Restore all wagmi mock defaults before each test
 beforeEach(() => {

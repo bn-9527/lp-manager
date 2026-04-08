@@ -8,6 +8,9 @@ export type ChainConfig = {
   positionsUrl: string // Uniswap positions page
 }
 
+// CHAIN_CONFIG is the single source of truth for supported chains.
+// When adding a chain: 1) add entry here, 2) add chain object to the local maps
+// in wagmi.ts (appkit networks) and ConnectButton.tsx (wagmi/chains).
 export const CHAIN_CONFIG: Record<number, ChainConfig> = {
   // BSC
   56: {
@@ -42,6 +45,11 @@ export const DEFAULT_CHAIN_ID = 56
 export function getChainConfig(chainId: number | undefined): ChainConfig {
   return CHAIN_CONFIG[chainId ?? DEFAULT_CHAIN_ID] ?? CHAIN_CONFIG[DEFAULT_CHAIN_ID]
 }
+
+// FIX: 统一的支持链 ID 列表，避免在 wagmi.ts/ConnectButton.tsx/contracts.ts 三处分别定义。
+// 显式列出而非 Object.keys() 派生，因为 JS 对数字键按升序排列（1,56,8453），
+// 而业务需要 BSC 优先（56 在最前）的顺序，该顺序决定 wagmi 默认链和 UI 下拉列表排序。
+export const SUPPORTED_CHAIN_IDS: number[] = [56, 1, 8453]
 
 export function isChainSupported(chainId: number | undefined): boolean {
   return chainId !== undefined && chainId in CHAIN_CONFIG

@@ -1,7 +1,6 @@
 // Core sqrtPriceX96 calculation logic, shared by SqrtPriceX96 tool component and other modules
 import BigNumber from 'bignumber.js'
-import { priceToSqrtPriceX96 } from './math'
-import { getTickAtSqrtRatio } from './encoder'
+import { priceToSqrtPriceX96, MIN_SQRT_RATIO, MAX_SQRT_RATIO, getTickAtSqrtRatio } from './math'
 export { bigIntSqrt } from './math'
 
 export interface SqrtPriceResult {
@@ -15,6 +14,8 @@ export interface SqrtPriceResult {
   symA: string
   symB: string
   priceStr: string
+  // FIX: 当输入价格超出 TickMath 范围被 clamp 时为 true，UI 应提示用户
+  clamped?: boolean
   error?: string
 }
 
@@ -44,6 +45,8 @@ export function calculateSqrtPriceX96(
     // FIX: reuse priceToSqrtPriceX96 from math.ts instead of duplicating BigInt math here.
     // When isSwapped, use the `invert` param for lossless BigInt fraction swap (no float 1/price).
     const sqrtPriceX96 = priceToSqrtPriceX96(userPrice, dec0, dec1, isSwapped)
+    // FIX: 检测是否被 clamp 到边界（输入价格超出 TickMath 范围），UI 应提示用户
+    const clamped = sqrtPriceX96 === MIN_SQRT_RATIO || sqrtPriceX96 === MAX_SQRT_RATIO - 1n
     // FIX: 原实现用浮点 Math.log 计算 tick 与 BigInt 的 sqrtPriceX96 来自不同计算路径，
     // 跨精度代币对可能产生 +/-1 tick 偏差。改用 getTickAtSqrtRatio 从 sqrtPriceX96 精确反推，
     // 保证 tick 和 sqrtPriceX96 完全一致。
@@ -61,7 +64,7 @@ export function calculateSqrtPriceX96(
     return {
       isSwapped, sym0, sym1, poolPriceFloat, sqrtPriceX96,
       sqrtPriceX96Hex: '0x' + sqrtPriceX96.toString(16),
-      tick, symA, symB, priceStr,
+      tick, symA, symB, priceStr, clamped,
     }
   } catch (e) {
     // FIX: poolPriceFloat 在 try 块内通过 const 声明，catch 块无法访问（ReferenceError）。

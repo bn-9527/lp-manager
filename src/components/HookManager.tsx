@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, useConfig } from 'wagmi'
+import { waitForTransactionReceipt as waitForTxReceipt } from 'wagmi/actions'
 import { isAddress, type Address, type Hex } from 'viem'
 import { HOOK_CONFIGS, type HookProtocol } from '../config/hooks'
 import { explorerTx, erc20Abi, getChainConfig, isChainSupported, ZERO_ADDR } from '../config/contracts'
@@ -29,9 +30,17 @@ function CollapsibleSection({ id, label, expanded, onToggle, children }: {
   )
 }
 
-export default function HookManager() {
+export default function HookManager({ onBusy }: { onBusy?: (busy: boolean) => void } = {}) {
   const { address, isConnected, chain } = useAccount()
   const chainId = chain?.id
+  const wagmiConfig = useConfig()
+
+  // FIX: async 闭包中的 chainId/address 是 render 时的快照（stale closure），
+  // 使用 useRef 跟踪最新值，与 AddLiquidity 保持一致的链/账户切换检测。
+  const chainIdRef = useRef(chainId)
+  const addressRef = useRef(address)
+  useEffect(() => { chainIdRef.current = chainId }, [chainId])
+  useEffect(() => { addressRef.current = address }, [address])
 
   // Protocol sub-tab
   const [protocol, setProtocol] = useState<HookProtocol>('uni-v4')
@@ -251,6 +260,10 @@ export default function HookManager() {
     if (val) {
       const ts = Math.floor(new Date(val + 'Z').getTime() / 1000)
       if (!isNaN(ts)) setInitTimestamp(String(ts))
+    } else {
+      // FIX: 清除 datetime 输入时必须同步清除 timestamp，否则 readOnly 的 timestamp 字段
+      // 残留旧值，用户误以为已清空但提交时仍发送旧时间戳到链上。
+      setInitTimestamp('')
     }
   }
   // FIX: 使用 config.needsPoolManager 配置驱动，而非硬编码 protocol === 'pcs-cl'，
@@ -270,6 +283,38 @@ export default function HookManager() {
     query: { enabled: validHook && config.needsPoolManager && parseInt(tickSpacing) > 0 },
   })
 
+  // FIX: 统一的写操作执行器，吸收 8 个 handler 共有的 setHash/setTxError/setIsBusy/catch/finally 样板，
+  // 同时处理 await 确认期间的链/账户切换检测。返回 boolean 供 handler 判断是否执行成功后的清理逻辑。
+  async function runOperation(
+    writeFn: () => Promise<Hex>,
+    setHash: (h: Hex | undefined) => void,
+    label: string,
+  ): Promise<boolean> {
+    setHash(undefined)
+    setTxError(null)
+    setIsBusy(true)
+    onBusy?.(true)
+    try {
+      const startChainId = chainIdRef.current
+      const startAddress = addressRef.current
+      const hash = await writeFn()
+      setHash(hash)
+      // FIX: 等待交易确认后再释放 isBusy，防止用户在确认前重复提交
+      await waitForTxReceipt(wagmiConfig, { hash })
+      if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) {
+        throw new Error(`Chain or account changed during ${label} — aborted`)
+      }
+      return true
+    } catch (err: unknown) {
+      const e = err as { shortMessage?: string; message?: string }
+      setTxError(e?.shortMessage || e?.message || `${label} failed`)
+      return false
+    } finally {
+      setIsBusy(false)
+      onBusy?.(false)
+    }
+  }
+
   async function handleInitializePool() {
     // FIX: 必须校验链支持性，否则用户在不支持的链上手动填入 hook 地址后可发送交易，
     // config.defaultAddresses[chainId] 为空只阻止了默认地址，不阻止手动输入场景。
@@ -283,10 +328,7 @@ export default function HookManager() {
       `Currency0: ${t0Preview}\nCurrency1: ${t1Preview}\n` +
       `Fee: ${fee}\nsqrtPriceX96: ${initSqrtPriceX96}\nStart Time: ${initTimestamp}`
     )) return
-    setInitTxHash(undefined)
-    setTxError(null)
-    setIsBusy(true)
-    try {
+    await runOperation(async () => {
       const ts = BigInt(initTimestamp)
       if (ts <= 0n) throw new Error('Invalid timestamp')
       if (!initSqrtPriceX96) throw new Error('sqrtPriceX96 is required')
@@ -294,52 +336,26 @@ export default function HookManager() {
       if (sqrtPriceX96 <= 0n) throw new Error('Invalid sqrtPriceX96')
       const t0 = token0.toLowerCase() < token1.toLowerCase() ? token0 : token1
       const t1 = t0 === token0 ? token1 : token0
-
       if (config.needsPoolManager) {
         if (!clPoolManager || !clPoolKeyParameters) throw new Error('CL poolManager or parameters not loaded')
-        const hash = await writeContractAsync({
-          address: hookAddress as Address,
-          abi: config.abi,
-          functionName: 'initializePool',
-          args: [
-            {
-              currency0: t0 as Address,
-              currency1: t1 as Address,
-              hooks: hookAddress as Address,
-              poolManager: clPoolManager as Address,
-              fee: parseInt(fee),
-              parameters: clPoolKeyParameters as Hex,
-            },
-            ts,
-            sqrtPriceX96,
-          ],
+        return writeContractAsync({
+          address: hookAddress as Address, abi: config.abi, functionName: 'initializePool',
+          args: [{
+            currency0: t0 as Address, currency1: t1 as Address,
+            hooks: hookAddress as Address, poolManager: clPoolManager as Address,
+            fee: parseInt(fee), parameters: clPoolKeyParameters as Hex,
+          }, ts, sqrtPriceX96],
         })
-        setInitTxHash(hash)
       } else {
-        const hash = await writeContractAsync({
-          address: hookAddress as Address,
-          abi: config.abi,
-          functionName: 'initializePool',
-          args: [
-            {
-              currency0: t0 as Address,
-              currency1: t1 as Address,
-              fee: parseInt(fee),
-              tickSpacing: parseInt(tickSpacing),
-              hooks: hookAddress as Address,
-            },
-            ts,
-            sqrtPriceX96,
-          ],
+        return writeContractAsync({
+          address: hookAddress as Address, abi: config.abi, functionName: 'initializePool',
+          args: [{
+            currency0: t0 as Address, currency1: t1 as Address,
+            fee: parseInt(fee), tickSpacing: parseInt(tickSpacing), hooks: hookAddress as Address,
+          }, ts, sqrtPriceX96],
         })
-        setInitTxHash(hash)
       }
-    } catch (err: unknown) {
-      const e = err as { shortMessage?: string; message?: string }
-      setTxError(e?.shortMessage || e?.message || 'Initialize failed')
-    } finally {
-      setIsBusy(false)
-    }
+    }, setInitTxHash, 'initializePool')
   }
 
   // --- Whitelist Management ---
@@ -348,46 +364,24 @@ export default function HookManager() {
 
   async function handleAddOwners() {
     if (!validHook || !poolIdHex || isBusy || !isChainSupported(chainId)) return
-    setOpTxHash(undefined)
-    setTxError(null)
-    setIsBusy(true)
-    try {
-      const addrs = newOwners.split(/[,\n\s]+/).map(s => s.trim()).filter(s => isAddress(s))
-      if (addrs.length === 0) throw new Error('No valid addresses')
-      const hash = await writeContractAsync({
-        address: hookAddress as Address, abi: config.abi, functionName: 'addPoolOwners',
-        args: [poolIdHex, addrs as Address[]],
-      })
-      setOpTxHash(hash)
-      setNewOwners('')
-    } catch (err: unknown) {
-      const e = err as { shortMessage?: string; message?: string }
-      setTxError(e?.shortMessage || e?.message || 'Add owners failed')
-    } finally {
-      setIsBusy(false)
-    }
+    const addrs = newOwners.split(/[,\n\s]+/).map(s => s.trim()).filter(s => isAddress(s))
+    if (addrs.length === 0) { setTxError('No valid addresses'); return }
+    const ok = await runOperation(() => writeContractAsync({
+      address: hookAddress as Address, abi: config.abi, functionName: 'addPoolOwners',
+      args: [poolIdHex, addrs as Address[]],
+    }), setOpTxHash, 'addPoolOwners')
+    if (ok) setNewOwners('')
   }
 
   async function handleRemoveOwners() {
     if (!validHook || !poolIdHex || removeChecked.size === 0 || isBusy || !isChainSupported(chainId)) return
     // FIX: 批量移除 owner 是高危操作，添加确认弹窗防止误操作
     if (!window.confirm(`Remove ${removeChecked.size} pool owner(s)? They can be re-added later by the hook owner.`)) return
-    setOpTxHash(undefined)
-    setTxError(null)
-    setIsBusy(true)
-    try {
-      const hash = await writeContractAsync({
-        address: hookAddress as Address, abi: config.abi, functionName: 'removePoolOwners',
-        args: [poolIdHex, Array.from(removeChecked) as Address[]],
-      })
-      setOpTxHash(hash)
-      setRemoveChecked(new Set())
-    } catch (err: unknown) {
-      const e = err as { shortMessage?: string; message?: string }
-      setTxError(e?.shortMessage || e?.message || 'Remove owners failed')
-    } finally {
-      setIsBusy(false)
-    }
+    const ok = await runOperation(() => writeContractAsync({
+      address: hookAddress as Address, abi: config.abi, functionName: 'removePoolOwners',
+      args: [poolIdHex, Array.from(removeChecked) as Address[]],
+    }), setOpTxHash, 'removePoolOwners')
+    if (ok) setRemoveChecked(new Set())
   }
 
   // --- Set Pool Start Time ---
@@ -399,28 +393,22 @@ export default function HookManager() {
     if (val) {
       const ts = Math.floor(new Date(val + 'Z').getTime() / 1000)
       if (!isNaN(ts)) setNewStartTimestamp(String(ts))
+    } else {
+      // FIX: 同 handleInitDatetimeChange，清除 datetime 时必须清除 timestamp 防止提交旧值。
+      setNewStartTimestamp('')
     }
   }
 
   async function handleSetStartTime() {
     if (!validHook || !poolIdHex || isBusy || !isChainSupported(chainId)) return
-    setOpTxHash(undefined)
-    setTxError(null)
-    setIsBusy(true)
-    try {
+    await runOperation(async () => {
       const ts = BigInt(newStartTimestamp)
       if (ts <= 0n) throw new Error('Invalid timestamp')
-      const hash = await writeContractAsync({
+      return writeContractAsync({
         address: hookAddress as Address, abi: config.abi, functionName: 'setPoolStartTime',
         args: [poolIdHex, ts],
       })
-      setOpTxHash(hash)
-    } catch (err: unknown) {
-      const e = err as { shortMessage?: string; message?: string }
-      setTxError(e?.shortMessage || e?.message || 'Set start time failed')
-    } finally {
-      setIsBusy(false)
-    }
+    }, setOpTxHash, 'setPoolStartTime')
   }
 
   // --- Set Position Manager ---
@@ -428,22 +416,13 @@ export default function HookManager() {
 
   async function handleSetPositionManager() {
     if (!validHook || isBusy || !isChainSupported(chainId)) return
-    setOpTxHash(undefined)
-    setTxError(null)
-    setIsBusy(true)
-    try {
+    await runOperation(async () => {
       if (!isAddress(newPosManager)) throw new Error('Invalid address')
-      const hash = await writeContractAsync({
+      return writeContractAsync({
         address: hookAddress as Address, abi: config.abi, functionName: 'setPositionManager',
         args: [newPosManager as Address],
       })
-      setOpTxHash(hash)
-    } catch (err: unknown) {
-      const e = err as { shortMessage?: string; message?: string }
-      setTxError(e?.shortMessage || e?.message || 'Set position manager failed')
-    } finally {
-      setIsBusy(false)
-    }
+    }, setOpTxHash, 'setPositionManager')
   }
 
   // --- Emergency Withdraw ---
@@ -456,36 +435,26 @@ export default function HookManager() {
     // FIX: 紧急提现是高危操作，添加确认弹窗防止误操作
     const typeLabel = withdrawType === 'safe' ? 'ETH/ERC20 (Safe)' : withdrawType === 'unsafe' ? 'ERC20 (Unsafe)' : 'ERC721'
     if (!window.confirm(`Emergency withdraw ${typeLabel} from hook contract?\nToken: ${withdrawToken}`)) return
-    setOpTxHash(undefined)
-    setTxError(null)
-    setIsBusy(true)
-    try {
+    await runOperation(async () => {
       if (!isAddress(withdrawToken)) throw new Error('Invalid token address')
-      let hash: Hex
       if (withdrawType === 'safe') {
-        hash = await writeContractAsync({
+        return writeContractAsync({
           address: hookAddress as Address, abi: config.abi,
           functionName: 'emergencyWithdraw', args: [withdrawToken as Address],
         })
       } else if (withdrawType === 'unsafe') {
-        hash = await writeContractAsync({
+        return writeContractAsync({
           address: hookAddress as Address, abi: config.abi,
           functionName: 'emergencyWithdrawERC20Unsafe', args: [withdrawToken as Address],
         })
       } else {
         if (!withdrawTokenId) throw new Error('Token ID required')
-        hash = await writeContractAsync({
+        return writeContractAsync({
           address: hookAddress as Address, abi: config.abi,
           functionName: 'emergencyWithdrawERC721', args: [withdrawToken as Address, BigInt(withdrawTokenId)],
         })
       }
-      setOpTxHash(hash)
-    } catch (err: unknown) {
-      const e = err as { shortMessage?: string; message?: string }
-      setTxError(e?.shortMessage || e?.message || 'Emergency withdraw failed')
-    } finally {
-      setIsBusy(false)
-    }
+    }, setOpTxHash, 'emergencyWithdraw')
   }
 
   // --- Ownership Transfer ---
@@ -495,41 +464,21 @@ export default function HookManager() {
     if (!validHook || isBusy || !isChainSupported(chainId)) return
     // FIX: 所有权转移是不可逆操作，添加确认弹窗防止误操作
     if (!window.confirm(`Transfer hook ownership to ${newOwnerAddr}?\nThis initiates a two-step transfer.`)) return
-    setOpTxHash(undefined)
-    setTxError(null)
-    setIsBusy(true)
-    try {
+    await runOperation(async () => {
       if (!isAddress(newOwnerAddr)) throw new Error('Invalid address')
-      const hash = await writeContractAsync({
+      return writeContractAsync({
         address: hookAddress as Address, abi: config.abi,
         functionName: 'transferOwnership', args: [newOwnerAddr as Address],
       })
-      setOpTxHash(hash)
-    } catch (err: unknown) {
-      const e = err as { shortMessage?: string; message?: string }
-      setTxError(e?.shortMessage || e?.message || 'Transfer ownership failed')
-    } finally {
-      setIsBusy(false)
-    }
+    }, setOpTxHash, 'transferOwnership')
   }
 
   async function handleAcceptOwnership() {
     if (!validHook || isBusy || !isChainSupported(chainId)) return
-    setOpTxHash(undefined)
-    setTxError(null)
-    setIsBusy(true)
-    try {
-      const hash = await writeContractAsync({
-        address: hookAddress as Address, abi: config.abi,
-        functionName: 'acceptOwnership', args: [],
-      })
-      setOpTxHash(hash)
-    } catch (err: unknown) {
-      const e = err as { shortMessage?: string; message?: string }
-      setTxError(e?.shortMessage || e?.message || 'Accept ownership failed')
-    } finally {
-      setIsBusy(false)
-    }
+    await runOperation(() => writeContractAsync({
+      address: hookAddress as Address, abi: config.abi,
+      functionName: 'acceptOwnership', args: [],
+    }), setOpTxHash, 'acceptOwnership')
   }
 
   // Auto-refresh pool status after tx confirmation

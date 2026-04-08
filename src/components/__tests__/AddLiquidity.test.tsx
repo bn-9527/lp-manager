@@ -12,6 +12,7 @@ import {
   useWaitForTransactionReceipt,
   useConfig,
 } from 'wagmi'
+import { TEST_USER, TEST_TX_HASH, TEST_POS_MGR, createDefaultReadContract } from '../../test/wagmi-mocks'
 
 // useQueryClient is NOT in setup.ts global mock, so mock it here
 vi.mock('@tanstack/react-query', async (importOriginal) => {
@@ -19,29 +20,7 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
   return { ...actual, useQueryClient: vi.fn(() => ({ invalidateQueries: vi.fn() })) }
 })
 
-const TEST_USER = '0xEe7b429Ea01F76102f053213463D4e95D5D24AE8'
-const TEST_TX_HASH = '0xabc123def456789012345678901234567890123456789012345678901234abcd'
-const TEST_POS_MGR = '0x7A4a5c919aE2541AeD11041A1AEeE68f1287f95b'
-
-// Rebuild the default useReadContract implementation (mirrors setup.ts)
-function defaultReadContract(args?: { functionName?: string; abi?: unknown[]; address?: string }) {
-  const fn = args?.functionName
-  if (!fn || !args?.address) return { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
-  if (fn === 'allowance' && args.abi && Array.isArray(args.abi)) {
-    const isPermit2 = (args.abi as Record<string, unknown>[]).some(
-      (item) => item.name === 'allowance' && Array.isArray(item.outputs) && item.outputs.length === 3,
-    )
-    if (isPermit2) return { data: [(1n << 160n) - 1n, 2000000000, 0], isLoading: false, isError: false, refetch: vi.fn() }
-  }
-  const defaults: Record<string, unknown> = {
-    symbol: 'TOKEN', decimals: 18, balanceOf: parseEther('100'),
-    allowance: 2n ** 256n - 1n,
-    owner: TEST_USER,
-    pendingOwner: '0x0000000000000000000000000000000000000000',
-    positionManager: TEST_POS_MGR,
-  }
-  return { data: defaults[fn] ?? undefined, isLoading: false, isError: false, refetch: vi.fn() }
-}
+const defaultReadContract = createDefaultReadContract()
 
 // Restore all wagmi mock defaults before each test.
 // vi.mocked(hook).mockReturnValue() persists across tests; this beforeEach
