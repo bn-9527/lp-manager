@@ -83,8 +83,8 @@ export function createWagmiMockFactory() {
 
     useConnect: vi.fn(() => ({
       connectors: [
-        { uid: 'mock-1', name: 'Mock Wallet' },
-        { uid: 'mock-2', name: 'WalletConnect' },
+        { uid: 'mock-1', id: 'injected', name: 'Mock Wallet' },
+        { uid: 'mock-2', id: 'walletConnect', name: 'WalletConnect' },
       ],
       connect: mockConnect,
       isPending: false,

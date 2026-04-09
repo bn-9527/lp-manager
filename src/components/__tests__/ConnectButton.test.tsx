@@ -17,7 +17,7 @@ beforeEach(() => {
     chain: { id: 56, name: 'BNB Smart Chain' },
   } as any)
   vi.mocked(useConnect).mockReturnValue({
-    connectors: [{ uid: 'mock-1', name: 'Mock Wallet' }, { uid: 'mock-2', name: 'WalletConnect' }],
+    connectors: [{ uid: 'mock-1', id: 'injected', name: 'Mock Wallet' }, { uid: 'mock-2', id: 'walletConnect', name: 'WalletConnect' }],
     connect: vi.fn(),
     isPending: false,
   } as any)
@@ -108,18 +108,18 @@ describe('ConnectButton', () => {
     it('calls connect when clicking a connector button', () => {
       const mockConnect = vi.fn()
       vi.mocked(useConnect).mockReturnValue({
-        connectors: [{ uid: 'mock-1', name: 'Mock Wallet' }],
+        connectors: [{ uid: 'mock-1', id: 'injected', name: 'Mock Wallet' }],
         connect: mockConnect,
         isPending: false,
       } as any)
       renderWithProviders(<ConnectButton />)
       fireEvent.click(screen.getByRole('button', { name: 'Mock Wallet' }))
-      expect(mockConnect).toHaveBeenCalledWith({ connector: { uid: 'mock-1', name: 'Mock Wallet' } })
+      expect(mockConnect).toHaveBeenCalledWith({ connector: { uid: 'mock-1', id: 'injected', name: 'Mock Wallet' } })
     })
 
     it('shows Connecting... when isPending', () => {
       vi.mocked(useConnect).mockReturnValue({
-        connectors: [{ uid: 'mock-1', name: 'Mock Wallet' }],
+        connectors: [{ uid: 'mock-1', id: 'injected', name: 'Mock Wallet' }],
         connect: vi.fn(),
         isPending: true,
       } as any)

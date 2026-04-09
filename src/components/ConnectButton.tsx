@@ -58,9 +58,11 @@ export default function ConnectButton() {
     )
   }
 
-  // excludeWalletIds 仅控制 AppKit modal，自定义按钮列表需额外过滤
-  // FIX: 用 connector.id 代替 connector.name 过滤，id 比 name 更稳定（不受国际化/版本影响）
-  const filteredConnectors = connectors.filter(c => c.id !== 'com.okex.wallet')
+  // FIX: AppKit 会自动注入多种 connector（Coinbase Wallet、OKX 等），
+  // 仅保留 injected / MetaMask / WalletConnect 三种，用白名单比黑名单更稳定——
+  // 新增的第三方 connector 不会意外出现在 UI 中。
+  const ALLOWED_CONNECTOR_IDS = new Set(['injected', 'io.metamask', 'walletConnect'])
+  const filteredConnectors = connectors.filter(c => ALLOWED_CONNECTOR_IDS.has(c.id))
 
   return (
     <div className="wallet-bar">

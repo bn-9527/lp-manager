@@ -29,7 +29,7 @@ vi.mock('wagmi', async () => {
       chain: { id: 56, name: 'BNB Smart Chain' },
     })),
     useConnect: vi.fn(() => ({
-      connectors: [{ uid: 'mock-1', name: 'Mock Wallet' }, { uid: 'mock-2', name: 'WalletConnect' }],
+      connectors: [{ uid: 'mock-1', id: 'injected', name: 'Mock Wallet' }, { uid: 'mock-2', id: 'walletConnect', name: 'WalletConnect' }],
       connect: vi.fn(),
       isPending: false,
     })),
