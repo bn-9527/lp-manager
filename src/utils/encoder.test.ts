@@ -398,7 +398,7 @@ describe('buildMintMulticallData', () => {
     currency1: '0xCBD7C163818189Ceb07B50Fd4974E78B029fc487' as const,
     fee: 500,
     tickSpacing: 10,
-    hooks: '0xb0B41e49082B9Ae0fFc6387abf3690cAfF972880' as const,
+    hooks: '0xb0BfF4fc6E3e6697F57D8bab1d9bb1A5F1212880' as const,
     tickLower: -887270,
     tickUpper: 887270,
     liquidity: 50000000000000000n,

@@ -92,7 +92,7 @@ export const HOOK_CONFIGS: Record<HookProtocol, HookProtocolConfig> = {
     protocol: 'pcs-cl',
     label: 'PCS CL',
     defaultAddresses: {
-      56: '0xB0b313A71F597079505243564F139030fA93a31c',
+      56: '0xb0bb171D333569CfD28a37F5c5DdDAAa90aD46af',
     },
     abi: [...sharedManagementAbi, ...clInitializePoolAbi] as const,
     needsPoolManager: true,
@@ -104,7 +104,7 @@ export const HOOK_CONFIGS: Record<HookProtocol, HookProtocolConfig> = {
     // 用户需手动输入 hook 地址。contracts.ts 中 Ethereum/Base 仍标记为支持链，
     // 因为 AddLiquidity（标准 V4 PositionManager 操作）不依赖自定义 hook 地址。
     defaultAddresses: {
-      56: '0xb0B41e49082B9Ae0fFc6387abf3690cAfF972880',
+      56: '0xb0BfF4fc6E3e6697F57D8bab1d9bb1A5F1212880',
     },
     abi: [...sharedManagementAbi, ...v4InitializePoolAbi] as const,
     needsPoolManager: false,

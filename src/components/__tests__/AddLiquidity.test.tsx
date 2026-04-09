@@ -73,7 +73,7 @@ describe('AddLiquidity', () => {
       renderWithProviders(<AddLiquidity />)
       const inputs = screen.getAllByRole('textbox')
       // First textbox = Hook address input
-      expect(inputs[0]).toHaveValue('0xb0B41e49082B9Ae0fFc6387abf3690cAfF972880')
+      expect(inputs[0]).toHaveValue('0xb0BfF4fc6E3e6697F57D8bab1d9bb1A5F1212880')
     })
   })
 
