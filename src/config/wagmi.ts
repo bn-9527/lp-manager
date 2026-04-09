@@ -12,9 +12,11 @@ if (!import.meta.env.VITE_WC_PROJECT_ID && import.meta.env.PROD) {
 // FIX: 链列表从 SUPPORTED_CHAIN_IDS (contracts.ts CHAIN_CONFIG) 派生，
 // 避免与 ConnectButton.tsx 和 contracts.ts 三处独立硬编码导致新增链时遗漏。
 const APPKIT_CHAIN_MAP = { 56: bsc, 1: mainnet, 8453: base } as const
+// FIX: createAppKit 要求 [AppKitNetwork, ...AppKitNetwork[]] 非空元组，
+// 普通数组 AppKitNetwork[] 不满足该约束，需用 as const 断言转为元组类型
 const networks = SUPPORTED_CHAIN_IDS
   .filter((id): id is keyof typeof APPKIT_CHAIN_MAP => id in APPKIT_CHAIN_MAP)
-  .map(id => APPKIT_CHAIN_MAP[id])
+  .map(id => APPKIT_CHAIN_MAP[id]) as unknown as [typeof bsc, ...typeof bsc[]]
 
 const wagmiAdapter = new WagmiAdapter({
   networks,
