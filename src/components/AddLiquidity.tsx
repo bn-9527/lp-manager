@@ -668,7 +668,7 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
         </div>
       ) : null}
       {/* token0 / token1 各自独立的 approve 按钮 */}
-      {tokenInfoReady && [{addr: tokenA, info: infoA, label: 'Token A'}, {addr: tokenB, info: infoB, label: 'Token B'}].map(({ addr, info, label }) => {
+      {tokenInfoReady && [{addr: tokenA, info: infoA}, {addr: tokenB, info: infoB}].map(({ addr, info }) => {
         if (!isValidAddr(addr) || isNative(addr) || !info.needsApprove) return null
         const sym = info.symbol ?? '???'
         const isApproving = typeof activeStep === 'object' && activeStep !== null && activeStep.symbol === sym
