@@ -52,7 +52,7 @@ function useTokenInfo(addr: string, chainId: number | undefined, userAddr: Addre
   const { data: erc20Allowance } = useReadContract({ address: valid ? (addr as Address) : undefined, abi: erc20Abi, functionName: 'allowance', args: userAddr ? [userAddr, chainConfig.permit2] : undefined, query: { enabled: valid && !!userAddr } })
   const { data: permit2Allowance } = useReadContract({ address: valid ? chainConfig.permit2 : undefined, abi: permit2Abi, functionName: 'allowance', args: userAddr ? [userAddr, addr as Address, chainConfig.positionManager] : undefined, query: { enabled: valid && !!userAddr } })
 
-  if (isNative(addr)) return { symbol: chainConfig.nativeSymbol, decimals: 18 as number | undefined, balance: nativeBal?.value, needsApprove: false as const, loading: false, error: false }
+  if (isNative(addr)) return { symbol: chainConfig.nativeSymbol, decimals: 18 as number | undefined, balance: nativeBal?.value, needsApprove: false as const, needsErc20Approve: false as const, needsPermit2Approve: false as const, loading: false, error: false }
 
   const loading = symLoading || decLoading
   const error = symError || decError
@@ -75,6 +75,8 @@ function useTokenInfo(addr: string, chainId: number | undefined, userAddr: Addre
     decimals: dec, // NO fallback — undefined if RPC fails
     balance: erc20Bal as bigint | undefined,
     needsApprove: !erc20Ok || !permit2Ok,
+    needsErc20Approve: !erc20Ok,
+    needsPermit2Approve: !permit2Ok,
     loading,
     error,
   }
@@ -397,7 +399,6 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
     { addr: tokenA, info: infoA },
     { addr: tokenB, info: infoB },
   ].filter(({ addr, info }) => isValidAddr(addr) && !isNative(addr) && info.needsApprove)
-  const tokensToApprove = tokensNeedingApprove.map(t => t.addr)
 
   async function handleApproveTokens() {
     if (!address || isBusy) return
@@ -416,25 +417,29 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
     const startChainId = chainIdRef.current
     const startAddress = addressRef.current
     try {
-      for (const tkn of tokensToApprove) {
-        // Step 1: ERC20 approve → Permit2 (MAX_UINT256: Permit2 架构下的标准一次性无限授权)
-        setActiveStep('erc20Approve')
-        const h1 = await writeContractAsync({ address: tkn as Address, abi: erc20Abi, functionName: 'approve', args: [chainConfig.permit2, BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff')] })
-        setErc20ApproveTxHash(h1)
-        // FIX: 必须等待 ERC20 approve 上链确认后再发 Permit2 approve，
-        // 否则 Permit2 合约读到的 allowance 仍为 0，导致交易 revert 浪费 gas。
-        await waitForTxReceipt(wagmiConfig, { hash: h1 })
-        if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
+      for (const { addr: tkn, info } of tokensNeedingApprove) {
+        // Step 1: ERC20 approve → Permit2 — 已有足够额度则跳过，避免浪费 gas
+        if (info.needsErc20Approve) {
+          setActiveStep('erc20Approve')
+          const h1 = await writeContractAsync({ address: tkn as Address, abi: erc20Abi, functionName: 'approve', args: [chainConfig.permit2, BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff')] })
+          setErc20ApproveTxHash(h1)
+          // FIX: 必须等待 ERC20 approve 上链确认后再发 Permit2 approve，
+          // 否则 Permit2 合约读到的 allowance 仍为 0，导致交易 revert 浪费 gas。
+          await waitForTxReceipt(wagmiConfig, { hash: h1 })
+          if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
+        }
 
-        // Step 2: Permit2 approve → PositionManager
-        setActiveStep('permit2Approve')
-        // uint160 max amount + uint48 max expiration (≈ 890 万年后过期，实际等同永不过期)
-        const UINT160_MAX = (1n << 160n) - 1n
-        const UINT48_MAX = (1n << 48n) - 1n
-        const h2 = await writeContractAsync({ address: chainConfig.permit2, abi: permit2Abi, functionName: 'approve', args: [tkn as Address, chainConfig.positionManager, UINT160_MAX, Number(UINT48_MAX)] })
-        setPermit2ApproveTxHash(h2)
-        await waitForTxReceipt(wagmiConfig, { hash: h2 })
-        if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
+        // Step 2: Permit2 approve → PositionManager — 已有足够额度且未过期则跳过
+        if (info.needsPermit2Approve) {
+          setActiveStep('permit2Approve')
+          // uint160 max amount + uint48 max expiration (≈ 890 万年后过期，实际等同永不过期)
+          const UINT160_MAX = (1n << 160n) - 1n
+          const UINT48_MAX = (1n << 48n) - 1n
+          const h2 = await writeContractAsync({ address: chainConfig.permit2, abi: permit2Abi, functionName: 'approve', args: [tkn as Address, chainConfig.positionManager, UINT160_MAX, Number(UINT48_MAX)] })
+          setPermit2ApproveTxHash(h2)
+          await waitForTxReceipt(wagmiConfig, { hash: h2 })
+          if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
+        }
       }
       setActiveStep(null)
     } catch (err: unknown) { const e = err as { shortMessage?: string; message?: string }; setError(e?.shortMessage || e?.message || 'Approve failed'); setActiveStep(null) }
@@ -663,7 +668,7 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
         <div className="status-box error" style={{ marginBottom: 10 }}>
           {tokenInfoLoading ? 'Loading token info...' : 'Failed to load token info — check addresses and RPC'}
         </div>
-      ) : tokensToApprove.length > 0 ? (
+      ) : tokensNeedingApprove.length > 0 ? (
         <button className="btn btn-secondary" onClick={handleApproveTokens} disabled={isBusy || activeStep === 'erc20Approve' || activeStep === 'permit2Approve' || isWritePending}>
           {activeStep === 'erc20Approve' ? 'Approving ERC20...' : activeStep === 'permit2Approve' ? 'Approving Permit2...' : `Approve ${tokensNeedingApprove.map(t => t.info.symbol ?? '???').join(' + ')}`}
         </button>
@@ -674,7 +679,7 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
       <TxStatus hash={permit2ApproveTxHash} confirming={isPermit2Confirming} confirmed={isPermit2Confirmed} label="Permit2 Approve" chainId={chainId} />
 
       {/* approve 额度不够时禁用，避免用户跳过 approve 直接发交易导致链上 revert 浪费 gas */}
-      <button className="btn btn-primary" onClick={handleAddLiquidity} disabled={isBusy || activeStep === 'addLiquidity' || isSendPending || !tokenInfoReady || !isChainSupported(chainId) || tokensToApprove.length > 0}>
+      <button className="btn btn-primary" onClick={handleAddLiquidity} disabled={isBusy || activeStep === 'addLiquidity' || isSendPending || !tokenInfoReady || !isChainSupported(chainId) || tokensNeedingApprove.length > 0}>
         {activeStep === 'addLiquidity' ? 'Sending...' : `Add Liquidity (${amountA} ${symbolA} + ${amountB ? parseFloat(amountB).toFixed(4) : '?'} ${symbolB})`}
       </button>
       <TxStatus hash={addLiquidityTxHash} confirming={isAddLiqConfirming} confirmed={isAddLiqConfirmed} label="Add Liquidity" chainId={chainId} />
