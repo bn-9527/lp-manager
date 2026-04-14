@@ -114,7 +114,8 @@ function TokenInput({ label, value, onChange, info, addr, chainId }: { label: st
   )
 }
 
-type TxStep = 'erc20Approve' | 'permit2Approve' | 'addLiquidity'
+// activeStep 带上 token symbol，让按钮文案区分正在 approve 哪个 token 的哪层授权
+type TxStep = { type: 'erc20Approve' | 'permit2Approve'; symbol: string } | 'addLiquidity'
 
 export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => void } = {}) {
   const { address, isConnected, chain } = useAccount()
@@ -418,9 +419,10 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
     const startAddress = addressRef.current
     try {
       for (const { addr: tkn, info } of tokensNeedingApprove) {
+        const sym = info.symbol ?? tkn.slice(0, 6)
         // Step 1: ERC20 approve → Permit2 — 已有足够额度则跳过，避免浪费 gas
         if (info.needsErc20Approve) {
-          setActiveStep('erc20Approve')
+          setActiveStep({ type: 'erc20Approve', symbol: sym })
           const h1 = await writeContractAsync({ address: tkn as Address, abi: erc20Abi, functionName: 'approve', args: [chainConfig.permit2, BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff')] })
           setErc20ApproveTxHash(h1)
           // FIX: 必须等待 ERC20 approve 上链确认后再发 Permit2 approve，
@@ -431,7 +433,7 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
 
         // Step 2: Permit2 approve → PositionManager — 已有足够额度且未过期则跳过
         if (info.needsPermit2Approve) {
-          setActiveStep('permit2Approve')
+          setActiveStep({ type: 'permit2Approve', symbol: sym })
           // uint160 max amount + uint48 max expiration (≈ 890 万年后过期，实际等同永不过期)
           const UINT160_MAX = (1n << 160n) - 1n
           const UINT48_MAX = (1n << 48n) - 1n
@@ -669,8 +671,16 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
           {tokenInfoLoading ? 'Loading token info...' : 'Failed to load token info — check addresses and RPC'}
         </div>
       ) : tokensNeedingApprove.length > 0 ? (
-        <button className="btn btn-secondary" onClick={handleApproveTokens} disabled={isBusy || activeStep === 'erc20Approve' || activeStep === 'permit2Approve' || isWritePending}>
-          {activeStep === 'erc20Approve' ? 'Approving ERC20...' : activeStep === 'permit2Approve' ? 'Approving Permit2...' : `Approve ${tokensNeedingApprove.map(t => t.info.symbol ?? '???').join(' + ')}`}
+        <button className="btn btn-secondary" onClick={handleApproveTokens} disabled={isBusy || (typeof activeStep === 'object' && activeStep !== null) || isWritePending}>
+          {typeof activeStep === 'object' && activeStep !== null
+            ? `Approving ${activeStep.symbol} ${activeStep.type === 'erc20Approve' ? 'ERC20' : 'Permit2'}...`
+            : `Approve ${tokensNeedingApprove.map(t => {
+                const sym = t.info.symbol ?? '???'
+                const parts: string[] = []
+                if (t.info.needsErc20Approve) parts.push('ERC20')
+                if (t.info.needsPermit2Approve) parts.push('Permit2')
+                return `${sym}(${parts.join('+')})`
+              }).join(' + ')}`}
         </button>
       ) : (
         <div className="status-box success" style={{ marginBottom: 10 }}>All tokens approved</div>
