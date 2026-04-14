@@ -1,4 +1,4 @@
-import { useAccount, useConnect, useDisconnect, useBalance, useSwitchChain } from 'wagmi'
+import { useAccount, useDisconnect, useBalance, useSwitchChain } from 'wagmi'
 import { useAppKit } from '@reown/appkit/react'
 import { formatEther } from 'viem'
 import type { Chain } from 'wagmi/chains'
@@ -17,7 +17,6 @@ const SUPPORTED_CHAINS = SUPPORTED_CHAIN_IDS
 
 export default function ConnectButton() {
   const { address, isConnected, chain } = useAccount()
-  const { connectors, connect, isPending } = useConnect()
   const { disconnect } = useDisconnect()
   const { switchChain, error: switchError } = useSwitchChain()
   const { data: balanceData } = useBalance({ address })
@@ -60,35 +59,11 @@ export default function ConnectButton() {
     )
   }
 
-  // FIX: AppKit 会自动注入多种 connector（Coinbase Wallet、OKX 等），
-  // 仅保留 injected / MetaMask 两种直连 connector，用白名单比黑名单更稳定——
-  // 新增的第三方 connector 不会意外出现在 UI 中。
-  // FIX: WalletConnect 必须通过 AppKit modal (useAppKit().open()) 打开，
-  // wagmi 的 connect({ connector }) 不会弹出 QR 码弹窗。
-  const DIRECT_CONNECTOR_IDS = new Set(['injected', 'io.metamask'])
-  const directConnectors = connectors.filter(c => DIRECT_CONNECTOR_IDS.has(c.id))
-
   return (
     <div className="wallet-bar">
-      <div className="connector-list">
-        {directConnectors.map((connector) => (
-          <button
-            key={connector.uid}
-            className="btn btn-connect"
-            disabled={isPending}
-            onClick={() => connect({ connector })}
-          >
-            {isPending ? 'Connecting...' : connector.name}
-          </button>
-        ))}
-        <button
-          className="btn btn-connect"
-          disabled={isPending}
-          onClick={() => open()}
-        >
-          WalletConnect
-        </button>
-      </div>
+      <button className="btn btn-connect" onClick={() => open()}>
+        Connect Wallet
+      </button>
     </div>
   )
 }

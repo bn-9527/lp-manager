@@ -34,11 +34,6 @@ vi.mock('wagmi', async () => {
       isConnected: true,
       chain: { id: 56, name: 'BNB Smart Chain' },
     })),
-    useConnect: vi.fn(() => ({
-      connectors: [{ uid: 'mock-1', id: 'injected', name: 'Mock Wallet' }, { uid: 'mock-2', id: 'walletConnect', name: 'WalletConnect' }],
-      connect: vi.fn(),
-      isPending: false,
-    })),
     useDisconnect: vi.fn(() => ({ disconnect: vi.fn() })),
     useBalance: vi.fn(() => ({
       data: { value: parseEther('10'), formatted: '10', symbol: 'BNB', decimals: 18 },
