@@ -1,4 +1,4 @@
-import { encodeAbiParameters, encodeFunctionData, type Hex, type Address } from 'viem'
+import { encodeAbiParameters, encodeFunctionData, keccak256, type Hex, type Address } from 'viem'
 import BigNumber from 'bignumber.js'
 import { positionManagerAbi } from '../config/contracts'
 import { numberToBigFraction, priceToSqrtPriceX96, getSqrtRatioAtTick, MAX_TICK } from './math'
@@ -22,6 +22,21 @@ const poolKeyTuple = {
     { name: 'tickSpacing', type: 'int24' as const },
     { name: 'hooks', type: 'address' as const },
   ],
+}
+
+/**
+ * Compute the Uniswap V4 PoolId = keccak256(abi.encode(PoolKey)) client-side.
+ * Zero RPC overhead — pure deterministic hash.
+ */
+export function computePoolId(
+  currency0: Address, currency1: Address,
+  fee: number, tickSpacing: number, hooks: Address,
+): Hex {
+  const encoded = encodeAbiParameters(
+    [poolKeyTuple],
+    [{ currency0, currency1, fee, tickSpacing, hooks }],
+  )
+  return keccak256(encoded)
 }
 
 export function buildMintMulticallData(params: {
@@ -143,9 +158,12 @@ export function getLiquidityForAmounts(
   tickLower: number, tickUpper: number,
   dec0: number, dec1: number,
   invertPrice = false,
+  // FIX(MaximumAmountExceeded): 链上 sqrtPriceX96 直传，跳过 float→bigint 往返转换。
+  // 用户手动输入的 price 与链上实际 sqrtPriceX96 不一致时，
+  // priceToSqrtPriceX96 的舍入偏差会导致 liquidity 计算错误，链上反算 token 量远超 amountMax。
+  sqrtPriceX96Override?: bigint,
 ): bigint {
-  // FIX: use `invert` param for lossless BigInt 1/price instead of caller doing float `1/price`
-  const sqrtP = priceToSqrtPriceX96(currentPrice, dec0, dec1, invertPrice)
+  const sqrtP = sqrtPriceX96Override ?? priceToSqrtPriceX96(currentPrice, dec0, dec1, invertPrice)
   const sqrtA = getSqrtRatioAtTick(tickLower)
   const sqrtB = getSqrtRatioAtTick(tickUpper)
   const Q96 = 1n << 96n
@@ -181,10 +199,12 @@ export function calcAmount1FromAmount0(
   tickLower: number, tickUpper: number,
   dec0: number, dec1: number,
   invertPrice = false,
+  // FIX(MaximumAmountExceeded): 同 getLiquidityForAmounts — 直传链上 sqrtPriceX96 消除精度损失
+  sqrtPriceX96Override?: bigint,
 ): number {
   if (amount0 <= 0 || currentPrice <= 0) return 0
 
-  const sqrtP = priceToSqrtPriceX96(currentPrice, dec0, dec1, invertPrice)
+  const sqrtP = sqrtPriceX96Override ?? priceToSqrtPriceX96(currentPrice, dec0, dec1, invertPrice)
   const sqrtA = getSqrtRatioAtTick(tickLower)
   const sqrtB = getSqrtRatioAtTick(tickUpper)
   const Q96 = 1n << 96n
@@ -224,10 +244,12 @@ export function calcAmount0FromAmount1(
   tickLower: number, tickUpper: number,
   dec0: number, dec1: number,
   invertPrice = false,
+  // FIX(MaximumAmountExceeded): 同 getLiquidityForAmounts — 直传链上 sqrtPriceX96 消除精度损失
+  sqrtPriceX96Override?: bigint,
 ): number {
   if (amount1 <= 0 || currentPrice <= 0) return 0
 
-  const sqrtP = priceToSqrtPriceX96(currentPrice, dec0, dec1, invertPrice)
+  const sqrtP = sqrtPriceX96Override ?? priceToSqrtPriceX96(currentPrice, dec0, dec1, invertPrice)
   const sqrtA = getSqrtRatioAtTick(tickLower)
   const sqrtB = getSqrtRatioAtTick(tickUpper)
   const Q96 = 1n << 96n

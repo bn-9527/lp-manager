@@ -11,7 +11,9 @@ import {
   getSqrtRatioAtTick,
   getTickAtSqrtRatio,
   mostSignificantBit,
+  computePoolId,
 } from './encoder'
+import { priceToSqrtPriceX96 } from './math'
 
 describe('feeToTickSpacing', () => {
   it('returns preset values for known fees', () => {
@@ -655,5 +657,202 @@ describe('priceToTick — alignment after clamp', () => {
       const tick = priceToTick(1e-20, 18, 6, tickSpacing)
       expect(Math.abs(tick % tickSpacing)).toBe(0)
     }
+  })
+})
+
+describe('computePoolId', () => {
+  it('returns a bytes32 hex string', () => {
+    const id = computePoolId(
+      '0x0000000000000000000000000000000000000000',
+      '0xCBD7C163818189Ceb07B50Fd4974E78B029fc487',
+      500, 10,
+      '0xb0BfF4fc6E3e6697F57D8bab1d9bb1A5F1212880',
+    )
+    expect(id).toMatch(/^0x[0-9a-f]{64}$/)
+  })
+
+  it('is deterministic — same inputs produce same output', () => {
+    const args = [
+      '0x0000000000000000000000000000000000000000',
+      '0xCBD7C163818189Ceb07B50Fd4974E78B029fc487',
+      500, 10,
+      '0xb0BfF4fc6E3e6697F57D8bab1d9bb1A5F1212880',
+    ] as const
+    expect(computePoolId(...args)).toBe(computePoolId(...args))
+  })
+
+  it('different hooks produce different poolId', () => {
+    const base = [
+      '0x0000000000000000000000000000000000000000',
+      '0xCBD7C163818189Ceb07B50Fd4974E78B029fc487',
+      500, 10,
+    ] as const
+    const id1 = computePoolId(...base, '0xb0BfF4fc6E3e6697F57D8bab1d9bb1A5F1212880')
+    const id2 = computePoolId(...base, '0x0000000000000000000000000000000000000000')
+    expect(id1).not.toBe(id2)
+  })
+})
+
+describe('sqrtPriceX96Override parameter', () => {
+  const sqrtPriceX96 = getSqrtRatioAtTick(0) // price = 1.0 for 18/18 pair
+  const tickLower = -887270
+  const tickUpper = 887270
+
+  it('getLiquidityForAmounts uses override instead of float conversion', () => {
+    const amount0 = 10n ** 18n // 1 token
+    const amount1 = 10n ** 18n
+    const withOverride = getLiquidityForAmounts(
+      amount0, amount1, 999, // deliberately wrong float price
+      tickLower, tickUpper, 18, 18, false,
+      sqrtPriceX96, // correct sqrtPriceX96 for price=1.0
+    )
+    const withFloat = getLiquidityForAmounts(
+      amount0, amount1, 1.0,
+      tickLower, tickUpper, 18, 18, false,
+    )
+    // override should match the float path for price=1.0, not the wrong price=999
+    expect(withOverride).toBe(withFloat)
+  })
+
+  it('calcAmount1FromAmount0 uses override', () => {
+    const result = calcAmount1FromAmount0(
+      1.0, 999, // wrong float price
+      tickLower, tickUpper, 18, 18, false,
+      sqrtPriceX96,
+    )
+    const expected = calcAmount1FromAmount0(
+      1.0, 1.0, tickLower, tickUpper, 18, 18, false,
+    )
+    // Should compute based on sqrtPriceX96 (price=1), not float price=999
+    expect(result).toBeCloseTo(expected, 6)
+  })
+
+  it('calcAmount0FromAmount1 uses override', () => {
+    const result = calcAmount0FromAmount1(
+      1.0, 999, // wrong float price
+      tickLower, tickUpper, 18, 18, false,
+      sqrtPriceX96,
+    )
+    const expected = calcAmount0FromAmount1(
+      1.0, 1.0, tickLower, tickUpper, 18, 18, false,
+    )
+    expect(result).toBeCloseTo(expected, 6)
+  })
+})
+
+/**
+ * Round-trip test: 模拟链上 modifyLiquidity 的 reverse 计算，
+ * 验证前端 amount → liquidity → amount 往返后结果在 slippage 容忍范围内。
+ *
+ * 这是原来测试缺失的关键场景：
+ * - 单元测试只验证 "给定 price X，数学正确"
+ * - 但无法检测 "用户输入的 price 和链上实际 price 不同" 导致的偏差
+ * - 此测试通过用不同的 sqrtPriceX96 做 forward/reverse 来暴露这个问题
+ */
+describe('round-trip: amount → liquidity → amount (detects price mismatch)', () => {
+  const Q96 = 1n << 96n
+  const tickLower = -887270
+  const tickUpper = 887270
+
+  // 链上 reverse 计算：从 liquidity + sqrtPriceX96 反算实际需要的 token amounts
+  // 与 Uniswap V4 PoolManager 的 modifyLiquidity 逻辑一致（ceiling division）
+  function reverseAmountsFromLiquidity(
+    liquidity: bigint, sqrtP: bigint, sqrtA: bigint, sqrtB: bigint,
+  ): { amount0: bigint; amount1: bigint } {
+    let amount0 = 0n
+    let amount1 = 0n
+
+    if (sqrtP <= sqrtA) {
+      // 链上用 ceiling division: amount0 = L * (sqrtB - sqrtA) / (sqrtA * sqrtB), rounded up
+      amount0 = ceilDiv(liquidity * Q96 * (sqrtB - sqrtA), sqrtA * sqrtB)
+    } else if (sqrtP >= sqrtB) {
+      amount1 = ceilDiv(liquidity * (sqrtB - sqrtA), Q96)
+    } else {
+      amount0 = ceilDiv(liquidity * Q96 * (sqrtB - sqrtP), sqrtP * sqrtB)
+      amount1 = ceilDiv(liquidity * (sqrtP - sqrtA), Q96)
+    }
+    return { amount0, amount1 }
+  }
+
+  function ceilDiv(a: bigint, b: bigint): bigint {
+    return (a + b - 1n) / b
+  }
+
+  it('same price: reverse amounts fit within 0.1% slippage', () => {
+    const price = 600
+    const sqrtP = priceToSqrtPriceX96(price, 18, 18)
+    const sqrtA = getSqrtRatioAtTick(tickLower)
+    const sqrtB = getSqrtRatioAtTick(tickUpper)
+    const amount0Input = 100n * 10n ** 18n // 100 tokens
+    const amount1Input = BigInt(Math.round(
+      calcAmount1FromAmount0(100, price, tickLower, tickUpper, 18, 18) * 1e18
+    ))
+
+    const liquidity = getLiquidityForAmounts(
+      amount0Input, amount1Input, price, tickLower, tickUpper, 18, 18,
+    )
+    const { amount0: reverseAmt0 } = reverseAmountsFromLiquidity(liquidity, sqrtP, sqrtA, sqrtB)
+
+    // 同一个 price 下，reverse 应在 0.1% 以内
+    const diff = Number(reverseAmt0 - amount0Input) / Number(amount0Input)
+    expect(Math.abs(diff)).toBeLessThan(0.001)
+  })
+
+  it('EXPOSES BUG: different price causes reverse amount to exceed slippage', () => {
+    // 用户输入 price=500，但链上实际 price=600
+    const userPrice = 500
+    const onChainPrice = 600
+    const onChainSqrtP = priceToSqrtPriceX96(onChainPrice, 18, 18)
+    const sqrtA = getSqrtRatioAtTick(tickLower)
+    const sqrtB = getSqrtRatioAtTick(tickUpper)
+
+    const amount0Input = 100n * 10n ** 18n
+    const amount1Input = BigInt(Math.round(
+      calcAmount1FromAmount0(100, userPrice, tickLower, tickUpper, 18, 18) * 1e18
+    ))
+
+    // 前端用 userPrice 算 liquidity（旧逻辑，没有 sqrtPriceX96Override）
+    const liquidity = getLiquidityForAmounts(
+      amount0Input, amount1Input, userPrice, tickLower, tickUpper, 18, 18,
+    )
+
+    // 链上用 onChainPrice 的 sqrtPriceX96 反算
+    const { amount0: reverseAmt0 } = reverseAmountsFromLiquidity(
+      liquidity, onChainSqrtP, sqrtA, sqrtB,
+    )
+
+    // price 不匹配导致反算 amount0 远超输入值，0.1% slippage 根本兜不住
+    const diff = Number(reverseAmt0 - amount0Input) / Number(amount0Input)
+    expect(Math.abs(diff)).toBeGreaterThan(0.01) // > 1% 偏差，会触发 MaximumAmountExceeded
+  })
+
+  it('sqrtPriceX96Override fixes the mismatch', () => {
+    // 用户输入 price=500（错的），但传入链上 sqrtPriceX96（对应 price=600）
+    const userPrice = 500
+    const onChainPrice = 600
+    const onChainSqrtP = priceToSqrtPriceX96(onChainPrice, 18, 18)
+    const sqrtA = getSqrtRatioAtTick(tickLower)
+    const sqrtB = getSqrtRatioAtTick(tickUpper)
+
+    const amount0Input = 100n * 10n ** 18n
+    // 用 sqrtPriceX96Override 计算配对金额（修复后的逻辑）
+    const amount1Input = BigInt(Math.round(
+      calcAmount1FromAmount0(100, userPrice, tickLower, tickUpper, 18, 18, false, onChainSqrtP) * 1e18
+    ))
+
+    // 前端也用 sqrtPriceX96Override 算 liquidity
+    const liquidity = getLiquidityForAmounts(
+      amount0Input, amount1Input, userPrice, tickLower, tickUpper, 18, 18, false,
+      onChainSqrtP,
+    )
+
+    // 链上用同样的 sqrtPriceX96 反算 — 现在应该匹配了
+    const { amount0: reverseAmt0 } = reverseAmountsFromLiquidity(
+      liquidity, onChainSqrtP, sqrtA, sqrtB,
+    )
+
+    const diff = Number(reverseAmt0 - amount0Input) / Number(amount0Input)
+    // 修复后偏差应在 0.1% 以内（仅有 BigInt floor/ceil rounding 的微小差异）
+    expect(Math.abs(diff)).toBeLessThan(0.001)
   })
 })

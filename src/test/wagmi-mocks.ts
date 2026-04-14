@@ -38,6 +38,9 @@ export const READ_CONTRACT_DEFAULTS: Record<string, unknown> = {
   isPoolOwner: true,
   poolManager: '0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b',
   getPoolKeyParameters: '0x0000000000000000000000000000000000000000000000000000000000c80014',
+  // StateView.getSlot0 returns [sqrtPriceX96, tick, protocolFee, lpFee]
+  // sqrtPriceX96 = sqrt(600) * 2^96 ≈ 1.94e30, corresponds to price ~600 for 18/18 decimal pair
+  getSlot0: [1940685917970653620197851660288n, 64, 0, 500],
 }
 
 // Permit2 allowance 返回 [amount, expiration, nonce] tuple

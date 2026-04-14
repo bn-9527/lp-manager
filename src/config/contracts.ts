@@ -3,6 +3,7 @@ import type { Address } from 'viem'
 export type ChainConfig = {
   positionManager: Address
   permit2: Address
+  stateView: Address // Uniswap V4 StateView — reads pool slot0 (sqrtPriceX96, tick, fees)
   explorerUrl: string
   nativeSymbol: string
   positionsUrl: string // Uniswap positions page
@@ -16,6 +17,7 @@ export const CHAIN_CONFIG: Record<number, ChainConfig> = {
   56: {
     positionManager: '0x7A4a5c919aE2541AeD11041A1AEeE68f1287f95b',
     permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    stateView: '0xd13dd3d6e93f276fafc9db9e6bb47c1180aee0c4',
     explorerUrl: 'https://bscscan.com',
     nativeSymbol: 'BNB',
     positionsUrl: 'https://app.uniswap.org/positions?chain=bnb',
@@ -24,6 +26,7 @@ export const CHAIN_CONFIG: Record<number, ChainConfig> = {
   1: {
     positionManager: '0xbD216513d74C8cf14cf4747E6AaA6420FF64ee9e',
     permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    stateView: '0x7ffe42c4a5deea5b0fec41c94c136cf115597227',
     explorerUrl: 'https://etherscan.io',
     nativeSymbol: 'ETH',
     positionsUrl: 'https://app.uniswap.org/positions?chain=ethereum',
@@ -32,6 +35,7 @@ export const CHAIN_CONFIG: Record<number, ChainConfig> = {
   8453: {
     positionManager: '0xbD216513d74C8cf14cf4747E6AaA6420FF64ee9e',
     permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    stateView: '0xa3c0c9b65bad0b08107aa264b0f3db444b867a71',
     explorerUrl: 'https://basescan.org',
     nativeSymbol: 'ETH',
     positionsUrl: 'https://app.uniswap.org/positions?chain=base',
@@ -82,6 +86,18 @@ export const permit2Abi = [
   { name: 'allowance', type: 'function', stateMutability: 'view',
     inputs: [{ name: 'owner', type: 'address' }, { name: 'token', type: 'address' }, { name: 'spender', type: 'address' }],
     outputs: [{ name: 'amount', type: 'uint160' }, { name: 'expiration', type: 'uint48' }, { name: 'nonce', type: 'uint48' }] },
+] as const
+
+// Uniswap V4 StateView — read pool state without modifying it
+export const stateViewAbi = [
+  { name: 'getSlot0', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'protocolFee', type: 'uint24' },
+      { name: 'lpFee', type: 'uint24' },
+    ] },
 ] as const
 
 export const erc20Abi = [

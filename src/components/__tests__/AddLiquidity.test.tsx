@@ -282,6 +282,9 @@ describe('AddLiquidity', () => {
     })
 
     it('rejects zero price', async () => {
+      // Pool 不存在时 price input 可编辑，才能测试手动输入零价格
+      const noPoolReadContract = createDefaultReadContract({ getSlot0: [0n, 0, 0, 0] })
+      vi.mocked(useReadContract).mockImplementation(noPoolReadContract as any)
       renderWithProviders(<AddLiquidity />)
       // 清空 price
       const priceInput = document.querySelector('.price-input') as HTMLInputElement
@@ -316,6 +319,30 @@ describe('AddLiquidity', () => {
       expect(screen.getByRole('button', { name: '0.1%' })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '0.5%' })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '1.0%' })).toBeInTheDocument()
+    })
+  })
+
+  describe('on-chain price fetch', () => {
+    it('shows "Price from on-chain pool" when getSlot0 returns data', () => {
+      renderWithProviders(<AddLiquidity />)
+      // Default mock returns getSlot0 data with non-zero sqrtPriceX96
+      expect(screen.getByText(/Price from on-chain pool/)).toBeInTheDocument()
+    })
+
+    it('makes price input read-only when pool exists', () => {
+      renderWithProviders(<AddLiquidity />)
+      const priceInput = screen.getByPlaceholderText('600')
+      expect(priceInput).toHaveAttribute('readOnly')
+    })
+
+    it('shows "Pool not found" when getSlot0 returns zero sqrtPriceX96', () => {
+      // Override getSlot0 to return uninitialized pool (sqrtPriceX96 = 0)
+      const zeroSlot0ReadContract = createDefaultReadContract({ getSlot0: [0n, 0, 0, 0] })
+      vi.mocked(useReadContract).mockImplementation(zeroSlot0ReadContract as any)
+      renderWithProviders(<AddLiquidity />)
+      expect(screen.getByText(/Pool not found/)).toBeInTheDocument()
+      const priceInput = screen.getByPlaceholderText('600')
+      expect(priceInput).not.toHaveAttribute('readOnly')
     })
   })
 })

@@ -17,14 +17,16 @@ import {
   explorerNftPositions,
   erc20Abi,
   permit2Abi,
+  stateViewAbi,
   isChainSupported,
   ZERO_ADDR,
 } from '../config/contracts'
 import {
   buildMintMulticallData, getFullRangeTicks,
   priceToTick, tickToPrice, calcAmount1FromAmount0, calcAmount0FromAmount1,
-  feeToTickSpacing, getLiquidityForAmounts,
+  feeToTickSpacing, getLiquidityForAmounts, computePoolId,
 } from '../utils/encoder'
+import { getTickAtSqrtRatio } from '../utils/math'
 import AddressLink from './AddressLink'
 import { POOL_DEFAULTS, DEFAULT_POOL_DEFAULTS } from '../config/defaults'
 
@@ -208,6 +210,57 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
 
   const decsLoaded = sorted.dec0 !== undefined && sorted.dec1 !== undefined
 
+  // --- On-chain pool price (sqrtPriceX96) ---
+  // FIX(MaximumAmountExceeded): 用户手动输入的 price 与链上实际 sqrtPriceX96 不一致时，
+  // 前端计算的 token 比例和 liquidity 都是错的，链上反算需要的 token 量远超 amountMax。
+  // 通过 StateView.getSlot0 读取链上价格，直传 bigint 到数学函数消除精度损失。
+  const poolId = useMemo(() => {
+    if (!isValidAddr(sorted.currency0) || !isValidAddr(sorted.currency1) || !isValidAddr(hooks)) return undefined
+    if (sorted.currency0.toLowerCase() === sorted.currency1.toLowerCase()) return undefined
+    const f = parseInt(fee)
+    if (isNaN(f) || f < 0) return undefined
+    if (isNaN(tsNum) || tsNum <= 0) return undefined
+    return computePoolId(sorted.currency0, sorted.currency1, f, tsNum, hooks as Address)
+  }, [sorted.currency0, sorted.currency1, fee, tsNum, hooks])
+
+  const { data: slot0Data, isLoading: slot0Loading } = useReadContract({
+    address: poolId ? (chainConfig.stateView as Address) : undefined,
+    abi: stateViewAbi,
+    functionName: 'getSlot0',
+    args: poolId ? [poolId] : undefined,
+    query: { enabled: !!poolId },
+  })
+
+  // sqrtPriceX96 === 0n means pool is not initialized yet
+  const onChainSqrtPriceX96 = useMemo(() => {
+    if (!slot0Data) return undefined
+    const sqrtPrice = (slot0Data as [bigint, number, number, number])[0]
+    if (sqrtPrice === 0n) return undefined
+    return sqrtPrice
+  }, [slot0Data])
+
+  // Convert on-chain sqrtPriceX96 to display price for auto-filling the price input.
+  // Uses BigInt tick path (getTickAtSqrtRatio → tickToPrice) for high-precision conversion.
+  const onChainDisplayPrice = useMemo(() => {
+    if (!onChainSqrtPriceX96 || !decsLoaded) return undefined
+    try {
+      const tick = getTickAtSqrtRatio(onChainSqrtPriceX96)
+      const p = sorted.swapped
+        ? tickToPrice(tick, sorted.dec0!, sorted.dec1!, true)
+        : tickToPrice(tick, sorted.dec0!, sorted.dec1!)
+      return (p > 0 && isFinite(p)) ? p : undefined
+    } catch { return undefined }
+  }, [onChainSqrtPriceX96, sorted, decsLoaded])
+
+  // Auto-fill price from on-chain when available; make input read-only to prevent
+  // user from entering a stale price that would cause MaximumAmountExceeded revert.
+  const poolExists = onChainSqrtPriceX96 !== undefined
+  useEffect(() => {
+    if (onChainDisplayPrice !== undefined) {
+      setPrice(formatNum(onChainDisplayPrice))
+    }
+  }, [onChainDisplayPrice])
+
   // Compute ticks (aligned to tickSpacing)
   const computedTicks = useMemo(() => {
     if (fullRange) return getFullRangeTicks(tsNum)
@@ -274,9 +327,9 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
     const p = parseFloat(price)
     if (!(p > 0) || !decsLoaded) return
 
-    // FIX: pass original price + invertPrice flag instead of floating-point `1/price`,
-    // so priceToSqrtPriceX96 does the inversion in BigInt domain (lossless).
-    // swapped 时 tokenA=currency1, tokenB=currency0
+    // FIX(MaximumAmountExceeded): 传入链上 sqrtPriceX96 直接用于计算，
+    // 避免 float→BigInt 往返转换导致的精度损失和与链上价格的不一致。
+    const sqrtOverride = onChainSqrtPriceX96
     const { tickLower, tickUpper } = computedTicks
     if (editedSide === 'A') {
       const a = parseFloat(editedValue)
@@ -284,23 +337,23 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
       if (!sorted.swapped) {
         // tokenA=currency0, 已知 amount0 求 amount1
         // FIX: formatNum 必须传入 tokenB 的 decimals，否则小数位超过 decB 时 parseUnits 崩溃
-        setAmountB(formatNum(calcAmount1FromAmount0(a, p, tickLower, tickUpper, sorted.dec0!, sorted.dec1!, sorted.swapped), decB))
+        setAmountB(formatNum(calcAmount1FromAmount0(a, p, tickLower, tickUpper, sorted.dec0!, sorted.dec1!, sorted.swapped, sqrtOverride), decB))
       } else {
         // tokenA=currency1, 已知 amount1 求 amount0 → amountB
-        setAmountB(formatNum(calcAmount0FromAmount1(a, p, tickLower, tickUpper, sorted.dec0!, sorted.dec1!, sorted.swapped), decB))
+        setAmountB(formatNum(calcAmount0FromAmount1(a, p, tickLower, tickUpper, sorted.dec0!, sorted.dec1!, sorted.swapped, sqrtOverride), decB))
       }
     } else {
       const b = parseFloat(editedValue)
       if (!(b > 0)) return
       if (sorted.swapped) {
         // tokenB=currency0, 已知 amount0 求 amount1 → amountA
-        setAmountA(formatNum(calcAmount1FromAmount0(b, p, tickLower, tickUpper, sorted.dec0!, sorted.dec1!, sorted.swapped), decA))
+        setAmountA(formatNum(calcAmount1FromAmount0(b, p, tickLower, tickUpper, sorted.dec0!, sorted.dec1!, sorted.swapped, sqrtOverride), decA))
       } else {
         // tokenB=currency1, 已知 amount1 求 amount0 → amountA
-        setAmountA(formatNum(calcAmount0FromAmount1(b, p, tickLower, tickUpper, sorted.dec0!, sorted.dec1!, sorted.swapped), decA))
+        setAmountA(formatNum(calcAmount0FromAmount1(b, p, tickLower, tickUpper, sorted.dec0!, sorted.dec1!, sorted.swapped, sqrtOverride), decA))
       }
     }
-  }, [price, computedTicks, sorted, decsLoaded, decA, decB])
+  }, [price, computedTicks, sorted, decsLoaded, decA, decB, onChainSqrtPriceX96])
 
   const handleAmountAChange = useCallback((val: string) => {
     setAmountA(val)
@@ -318,6 +371,19 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
   const snapAmounts = useCallback(() => {
     calcOtherAmount(lastEdited, lastEdited === 'A' ? amountA : amountB)
   }, [calcOtherAmount, lastEdited, amountA, amountB])
+
+  // FIX(MaximumAmountExceeded): 链上价格首次加载或刷新时，用新价格重算配对金额，
+  // 防止初始渲染时用默认 price 算出的旧比例残留。
+  const prevSqrtPriceRef = useRef<bigint | undefined>(undefined)
+  useEffect(() => {
+    if (onChainSqrtPriceX96 && onChainSqrtPriceX96 !== prevSqrtPriceRef.current) {
+      prevSqrtPriceRef.current = onChainSqrtPriceX96
+      const edited = lastEdited === 'A' ? amountA : amountB
+      if (edited && parseFloat(edited) > 0) {
+        calcOtherAmount(lastEdited, edited)
+      }
+    }
+  }, [onChainSqrtPriceX96]) // eslint-disable-line react-hooks/exhaustive-deps -- intentionally minimal deps to avoid loops
 
   const tanstackQueryClient = useQueryClient()
   const { writeContractAsync, isPending: isWritePending } = useWriteContract()
@@ -430,12 +496,13 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
 
       // Convert user's desired token amounts to the correct liquidity value
       // using the V3/V4 LiquidityAmounts formula
-      // FIX: pass original price + invertPrice flag instead of floating-point `1/currentPrice`,
-      // so priceToSqrtPriceX96 does the inversion in BigInt domain (lossless).
+      // FIX(MaximumAmountExceeded): 传入链上 sqrtPriceX96 直接参与 liquidity 计算，
+      // 确保与链上 modifyLiquidity 使用完全相同的价格，消除 float→BigInt 精度偏差。
       const liquidity = getLiquidityForAmounts(
         amount0, amount1, currentPrice,
         computedTicks.tickLower, computedTicks.tickUpper,
         sorted.dec0!, sorted.dec1!, sorted.swapped,
+        onChainSqrtPriceX96,
       )
       if (liquidity <= 0n) throw new Error('Liquidity calculation resulted in 0')
 
@@ -522,9 +589,18 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
       <div className="section-title" style={{ fontSize: 14 }}>Price</div>
       <div className="price-row">
         <span className="price-label">1 {symbolA} =</span>
-        <input className="price-input" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="600" />
+        {/* FIX(MaximumAmountExceeded): 链上池子存在时锁定 price 为链上实时值，
+            防止用户输入过期价格导致 token 比例计算错误。池不存在时允许手动输入。 */}
+        <input className="price-input" value={price}
+          readOnly={poolExists}
+          onChange={(e) => { if (!poolExists) setPrice(e.target.value) }}
+          style={{ opacity: poolExists ? 0.7 : 1 }}
+          placeholder="600" />
         <span className="price-label">{symbolB}</span>
       </div>
+      {slot0Loading && <div className="hint" style={{ color: '#ffb74d' }}>Fetching pool price...</div>}
+      {poolExists && <div className="hint" style={{ color: '#50fa7b' }}>Price from on-chain pool</div>}
+      {!slot0Loading && !poolExists && poolId && <div className="hint" style={{ color: '#888' }}>Pool not found — enter price manually</div>}
 
       <div className="section-title" style={{ fontSize: 14, marginTop: 8 }}>Range</div>
       <div className="checkbox-group">
