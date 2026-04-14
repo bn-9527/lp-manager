@@ -129,7 +129,7 @@ describe('AddLiquidity', () => {
       setupNeedApprove()
       renderWithProviders(<AddLiquidity />)
       fireEvent.click(screen.getByText(/Approve/))
-      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('unlimited token approval'))
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('unlimited TOKEN approval'))
     })
 
     it('does not send tx when confirm is cancelled', () => {
