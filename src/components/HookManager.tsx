@@ -166,7 +166,11 @@ export default function HookManager({ onBusy }: { onBusy?: (busy: boolean) => vo
   })
 
   // Read pool status (only when poolId is available)
-  const poolIdHex = poolId as Hex | undefined
+  // FIX: 切换 protocol/chain 后 token 被清空导致 getPoolId 查询 disabled，但 wagmi (TanStack Query)
+  // 在 enabled=false 时保留上次缓存的 data 不清除。如果不加 poolParamsValid 守卫，
+  // poolIdHex 仍为旧值 → isPoolEnabled/isPoolStarted 用旧 poolId 查询新 hook 合约 → 返回错误状态，
+  // 用户切到 Uni V4 时看到"池子已初始化"的误导信息。
+  const poolIdHex = (validHook && poolParamsValid ? poolId : undefined) as Hex | undefined
   const hasPoolId = !!poolIdHex
 
   const { data: isPoolEnabled, refetch: refetchEnabled } = useReadContract({
