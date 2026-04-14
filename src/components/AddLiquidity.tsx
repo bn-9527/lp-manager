@@ -401,47 +401,43 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
     { addr: tokenB, info: infoB },
   ].filter(({ addr, info }) => isValidAddr(addr) && !isNative(addr) && info.needsApprove)
 
-  async function handleApproveTokens() {
+  // 按单个 token 独立 approve，避免两个 token 混在一个按钮里
+  async function handleApproveToken(tkn: string, info: ReturnType<typeof useTokenInfo>) {
     if (!address || isBusy) return
+    const sym = info.symbol ?? tkn.slice(0, 6)
     // FIX: 无限授权(MAX_UINT256 → Permit2, UINT160_MAX → PositionManager) 是 Permit2 架构标准模式，
     // 但用户可能不了解此机制。弹窗确认避免用户在不知情下授出无限额度。
     const confirmed = window.confirm(
-      'This will grant unlimited token approval to the Permit2 contract, ' +
+      `This will grant unlimited ${sym} approval to the Permit2 contract, ` +
       'then authorize the PositionManager via Permit2.\n\n' +
       'This is the standard Uniswap V4 approval flow. Continue?'
     )
     if (!confirmed) return
     setIsBusy(true); onBusy?.(true)
     setError(null); setErc20ApproveTxHash(undefined); setPermit2ApproveTxHash(undefined)
-    // FIX: 使用 chainIdRef/addressRef 检测链/账户切换，而非闭包捕获的 chainId/address。
-    // 闭包值在 async await 恢复后仍是 render 时的快照（stale closure），无法感知变化。
     const startChainId = chainIdRef.current
     const startAddress = addressRef.current
     try {
-      for (const { addr: tkn, info } of tokensNeedingApprove) {
-        const sym = info.symbol ?? tkn.slice(0, 6)
-        // Step 1: ERC20 approve → Permit2 — 已有足够额度则跳过，避免浪费 gas
-        if (info.needsErc20Approve) {
-          setActiveStep({ type: 'erc20Approve', symbol: sym })
-          const h1 = await writeContractAsync({ address: tkn as Address, abi: erc20Abi, functionName: 'approve', args: [chainConfig.permit2, BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff')] })
-          setErc20ApproveTxHash(h1)
-          // FIX: 必须等待 ERC20 approve 上链确认后再发 Permit2 approve，
-          // 否则 Permit2 合约读到的 allowance 仍为 0，导致交易 revert 浪费 gas。
-          await waitForTxReceipt(wagmiConfig, { hash: h1 })
-          if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
-        }
+      // Step 1: ERC20 approve → Permit2 — 已有足够额度则跳过，避免浪费 gas
+      if (info.needsErc20Approve) {
+        setActiveStep({ type: 'erc20Approve', symbol: sym })
+        const h1 = await writeContractAsync({ address: tkn as Address, abi: erc20Abi, functionName: 'approve', args: [chainConfig.permit2, BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff')] })
+        setErc20ApproveTxHash(h1)
+        // FIX: 必须等待 ERC20 approve 上链确认后再发 Permit2 approve，
+        // 否则 Permit2 合约读到的 allowance 仍为 0，导致交易 revert 浪费 gas。
+        await waitForTxReceipt(wagmiConfig, { hash: h1 })
+        if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
+      }
 
-        // Step 2: Permit2 approve → PositionManager — 已有足够额度且未过期则跳过
-        if (info.needsPermit2Approve) {
-          setActiveStep({ type: 'permit2Approve', symbol: sym })
-          // uint160 max amount + uint48 max expiration (≈ 890 万年后过期，实际等同永不过期)
-          const UINT160_MAX = (1n << 160n) - 1n
-          const UINT48_MAX = (1n << 48n) - 1n
-          const h2 = await writeContractAsync({ address: chainConfig.permit2, abi: permit2Abi, functionName: 'approve', args: [tkn as Address, chainConfig.positionManager, UINT160_MAX, Number(UINT48_MAX)] })
-          setPermit2ApproveTxHash(h2)
-          await waitForTxReceipt(wagmiConfig, { hash: h2 })
-          if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
-        }
+      // Step 2: Permit2 approve → PositionManager — 已有足够额度且未过期则跳过
+      if (info.needsPermit2Approve) {
+        setActiveStep({ type: 'permit2Approve', symbol: sym })
+        const UINT160_MAX = (1n << 160n) - 1n
+        const UINT48_MAX = (1n << 48n) - 1n
+        const h2 = await writeContractAsync({ address: chainConfig.permit2, abi: permit2Abi, functionName: 'approve', args: [tkn as Address, chainConfig.positionManager, UINT160_MAX, Number(UINT48_MAX)] })
+        setPermit2ApproveTxHash(h2)
+        await waitForTxReceipt(wagmiConfig, { hash: h2 })
+        if (chainIdRef.current !== startChainId || addressRef.current !== startAddress) throw new Error('Chain or account changed during approval — aborted to prevent cross-chain/account mismatch')
       }
       setActiveStep(null)
     } catch (err: unknown) { const e = err as { shortMessage?: string; message?: string }; setError(e?.shortMessage || e?.message || 'Approve failed'); setActiveStep(null) }
@@ -670,19 +666,26 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
         <div className="status-box error" style={{ marginBottom: 10 }}>
           {tokenInfoLoading ? 'Loading token info...' : 'Failed to load token info — check addresses and RPC'}
         </div>
-      ) : tokensNeedingApprove.length > 0 ? (
-        <button className="btn btn-secondary" onClick={handleApproveTokens} disabled={isBusy || (typeof activeStep === 'object' && activeStep !== null) || isWritePending}>
-          {typeof activeStep === 'object' && activeStep !== null
-            ? `Approving ${activeStep.symbol} ${activeStep.type === 'erc20Approve' ? 'ERC20' : 'Permit2'}...`
-            : `Approve ${tokensNeedingApprove.map(t => {
-                const sym = t.info.symbol ?? '???'
-                const parts: string[] = []
-                if (t.info.needsErc20Approve) parts.push('ERC20')
-                if (t.info.needsPermit2Approve) parts.push('Permit2')
-                return `${sym}(${parts.join('+')})`
-              }).join(' + ')}`}
-        </button>
-      ) : (
+      ) : null}
+      {/* token0 / token1 各自独立的 approve 按钮 */}
+      {tokenInfoReady && [{addr: tokenA, info: infoA, label: 'Token A'}, {addr: tokenB, info: infoB, label: 'Token B'}].map(({ addr, info, label }) => {
+        if (!isValidAddr(addr) || isNative(addr) || !info.needsApprove) return null
+        const sym = info.symbol ?? '???'
+        const isApproving = typeof activeStep === 'object' && activeStep !== null && activeStep.symbol === sym
+        const parts: string[] = []
+        if (info.needsErc20Approve) parts.push('ERC20')
+        if (info.needsPermit2Approve) parts.push('Permit2')
+        return (
+          <button key={addr} className="btn btn-secondary" style={{ marginBottom: 6 }}
+            onClick={() => handleApproveToken(addr, info)}
+            disabled={isBusy || isWritePending}>
+            {isApproving
+              ? `Approving ${sym} ${activeStep.type === 'erc20Approve' ? 'ERC20' : 'Permit2'}...`
+              : `Approve ${sym} (${parts.join(' + ')})`}
+          </button>
+        )
+      })}
+      {tokenInfoReady && tokensNeedingApprove.length === 0 && (
         <div className="status-box success" style={{ marginBottom: 10 }}>All tokens approved</div>
       )}
       <TxStatus hash={erc20ApproveTxHash} confirming={isErc20Confirming} confirmed={isErc20Confirmed} label="ERC20 Approve" chainId={chainId} />
