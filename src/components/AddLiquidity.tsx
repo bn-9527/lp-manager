@@ -673,7 +673,8 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
       <TxStatus hash={erc20ApproveTxHash} confirming={isErc20Confirming} confirmed={isErc20Confirmed} label="ERC20 Approve" chainId={chainId} />
       <TxStatus hash={permit2ApproveTxHash} confirming={isPermit2Confirming} confirmed={isPermit2Confirmed} label="Permit2 Approve" chainId={chainId} />
 
-      <button className="btn btn-primary" onClick={handleAddLiquidity} disabled={isBusy || activeStep === 'addLiquidity' || isSendPending || !tokenInfoReady || !isChainSupported(chainId)}>
+      {/* approve 额度不够时禁用，避免用户跳过 approve 直接发交易导致链上 revert 浪费 gas */}
+      <button className="btn btn-primary" onClick={handleAddLiquidity} disabled={isBusy || activeStep === 'addLiquidity' || isSendPending || !tokenInfoReady || !isChainSupported(chainId) || tokensToApprove.length > 0}>
         {activeStep === 'addLiquidity' ? 'Sending...' : `Add Liquidity (${amountA} ${symbolA} + ${amountB ? parseFloat(amountB).toFixed(4) : '?'} ${symbolB})`}
       </button>
       <TxStatus hash={addLiquidityTxHash} confirming={isAddLiqConfirming} confirmed={isAddLiqConfirmed} label="Add Liquidity" chainId={chainId} />
