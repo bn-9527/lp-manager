@@ -32,7 +32,7 @@ createAppKit({
   metadata: {
     name: 'V4 LP Manager',
     description: 'Uniswap V4 Liquidity Manager',
-    url: 'https://williamlll.github.io/lp-manager',
+    url: 'https://bn-9527.github.io/lp-manager',
     icons: [],
   },
   themeMode: 'dark',
