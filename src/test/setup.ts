@@ -14,6 +14,12 @@ vi.stubGlobal('confirm', vi.fn(() => true))
 // 阻止 @reown/appkit import 副作用
 vi.mock('@reown/appkit-adapter-wagmi', () => ({ WagmiAdapter: vi.fn() }))
 vi.mock('@reown/appkit', () => ({ createAppKit: vi.fn() }))
+// FIX: wagmi.ts 从 @reown/appkit/react 导入 createAppKit，
+// ConnectButton 从同一路径导入 useAppKit，两者都需要 mock
+vi.mock('@reown/appkit/react', () => ({
+  createAppKit: vi.fn(),
+  useAppKit: vi.fn(() => ({ open: vi.fn(), close: vi.fn() })),
+}))
 
 // ── 全局 wagmi mock ──
 // 复用 wagmi-mocks.ts 的常量和工厂函数，避免多处重复定义。
