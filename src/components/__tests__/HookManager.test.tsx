@@ -19,10 +19,10 @@ beforeEach(() => {
   vi.mocked(useAccount).mockReturnValue({
     address: TEST_USER,
     isConnected: true,
-    chain: { id: 56, name: 'BNB Smart Chain' },
+    chain: { id: 8453, name: 'Base' },
   } as any)
   vi.mocked(useBalance).mockReturnValue({
-    data: { value: parseEther('10'), formatted: '10', symbol: 'BNB', decimals: 18 },
+    data: { value: parseEther('10'), formatted: '10', symbol: 'ETH', decimals: 18 },
   } as any)
   vi.mocked(useReadContract).mockImplementation(defaultReadContract as any)
   vi.mocked(useWriteContract).mockReturnValue({

@@ -29,10 +29,10 @@ beforeEach(() => {
   vi.mocked(useAccount).mockReturnValue({
     address: TEST_USER,
     isConnected: true,
-    chain: { id: 56, name: 'BNB Smart Chain' },
+    chain: { id: 8453, name: 'Base' },
   } as any)
   vi.mocked(useBalance).mockReturnValue({
-    data: { value: parseEther('10'), formatted: '10', symbol: 'BNB', decimals: 18 },
+    data: { value: parseEther('10'), formatted: '10', symbol: 'ETH', decimals: 18 },
   } as any)
   vi.mocked(useReadContract).mockImplementation(defaultReadContract as any)
   vi.mocked(useWriteContract).mockReturnValue({
@@ -69,11 +69,11 @@ describe('AddLiquidity', () => {
       expect(screen.getByText('Token B')).toBeInTheDocument()
     })
 
-    it('populates BSC defaults', () => {
+    it('populates Base defaults', () => {
       renderWithProviders(<AddLiquidity />)
       const inputs = screen.getAllByRole('textbox')
       // First textbox = Hook address input
-      expect(inputs[0]).toHaveValue('0xb0BfF4fc6E3e6697F57D8bab1d9bb1A5F1212880')
+      expect(inputs[0]).toHaveValue('0xB0b24B89dB0dafbE43C5b40226b63A179f592880')
     })
   })
 
@@ -86,8 +86,8 @@ describe('AddLiquidity', () => {
 
     it('shows native token symbol for zero address', () => {
       renderWithProviders(<AddLiquidity />)
-      // tokenA defaults to 0x000...0 (native), shows BNB
-      expect(screen.getAllByText('BNB').length).toBeGreaterThan(0)
+      // tokenA defaults to 0x000...0 (native), shows ETH on Base
+      expect(screen.getAllByText('ETH').length).toBeGreaterThan(0)
     })
   })
 

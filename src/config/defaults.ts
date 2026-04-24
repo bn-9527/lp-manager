@@ -30,9 +30,16 @@ export const POOL_DEFAULTS: Record<number, PoolDefaults> = {
   },
   // Base
   8453: {
-    hooks: '0x0000000000000000000000000000000000000000',
+    hooks: HOOK_CONFIGS['uni-v4'].defaultAddresses[8453] ?? ZERO_ADDR,
     tokenA: '0x0000000000000000000000000000000000000000',
     tokenB: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    fee: '500', price: '2000', amountA: '0.01', slippage: '0.1',
+  },
+  // Arbitrum
+  42161: {
+    hooks: HOOK_CONFIGS['uni-v4'].defaultAddresses[42161] ?? ZERO_ADDR,
+    tokenA: '0x0000000000000000000000000000000000000000',
+    tokenB: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
     fee: '500', price: '2000', amountA: '0.01', slippage: '0.1',
   },
 }
