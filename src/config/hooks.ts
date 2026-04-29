@@ -100,10 +100,11 @@ export const HOOK_CONFIGS: Record<HookProtocol, HookProtocolConfig> = {
   'uni-v4': {
     protocol: 'uni-v4',
     label: 'Uni V4',
-    // NOTE: V4AlphaHook 已部署到 Base 和 Arbitrum。BSC 和 Ethereum 尚无部署，
-    // 用户需手动输入 hook 地址。contracts.ts 中这些链仍标记为支持链，
+    // NOTE: V4AlphaHook 已部署到 Base、Arbitrum 和 Ethereum。BSC 尚无部署，
+    // 用户需手动输入 hook 地址。contracts.ts 中 BSC 仍标记为支持链,
     // 因为 AddLiquidity（标准 V4 PositionManager 操作）不依赖自定义 hook 地址。
     defaultAddresses: {
+      1: '0xB0BbF26A84587E91F9C0fFA5622940c3324e2880',
       8453: '0xB0b24B89dB0dafbE43C5b40226b63A179f592880',
       42161: '0xB0Be14859E2cA735B22E58C52A6F3413454E2880',
     },
