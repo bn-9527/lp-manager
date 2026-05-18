@@ -659,7 +659,7 @@ export default function AddLiquidity({ onBusy }: { onBusy?: (busy: boolean) => v
 
       {!isChainSupported(chainId) && (
         <div className="status-box error" style={{ marginBottom: 10 }}>
-          Current chain is not supported. Please switch to BSC, Ethereum, or Base.
+          Current chain is not supported. Please switch to BSC, Ethereum, Base, or Arbitrum.
         </div>
       )}
       {!tokenInfoReady ? (

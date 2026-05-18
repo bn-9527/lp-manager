@@ -2,7 +2,7 @@ import { useAccount, useDisconnect, useBalance, useSwitchChain } from 'wagmi'
 import { useAppKit } from '@reown/appkit/react'
 import { formatEther } from 'viem'
 import type { Chain } from 'wagmi/chains'
-import { bsc, mainnet, base } from 'wagmi/chains'
+import { bsc, mainnet, base, arbitrum } from 'wagmi/chains'
 import AddressLink from './AddressLink'
 import { getChainConfig, SUPPORTED_CHAIN_IDS } from '../config/contracts'
 
@@ -10,7 +10,7 @@ import { getChainConfig, SUPPORTED_CHAIN_IDS } from '../config/contracts'
 // 避免与 wagmi.ts 和 contracts.ts 三处独立硬编码导致新增链时遗漏。
 // 添加新链时：1) 在 contracts.ts CHAIN_CONFIG 添加配置，2) 在此 map 和 wagmi.ts 的 map 添加 chain 对象。
 // FIX: 用 Chain 而非 typeof bsc，各链的 literal 类型（如 blockExplorers.default.name）互不兼容
-const WAGMI_CHAIN_MAP: Record<number, Chain> = { 56: bsc, 1: mainnet, 8453: base }
+const WAGMI_CHAIN_MAP: Record<number, Chain> = { 56: bsc, 1: mainnet, 8453: base, 42161: arbitrum }
 const SUPPORTED_CHAINS = SUPPORTED_CHAIN_IDS
   .filter(id => id in WAGMI_CHAIN_MAP)
   .map(id => WAGMI_CHAIN_MAP[id])

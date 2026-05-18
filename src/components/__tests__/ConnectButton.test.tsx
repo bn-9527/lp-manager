@@ -44,10 +44,11 @@ describe('ConnectButton', () => {
       expect(select).toBeInTheDocument()
       expect(select).toHaveValue('56')
       const options = screen.getAllByRole('option')
-      expect(options).toHaveLength(3)
+      expect(options).toHaveLength(4)
       expect(options[0]).toHaveTextContent('BNB Smart Chain')
       expect(options[1]).toHaveTextContent('Ethereum')
       expect(options[2]).toHaveTextContent('Base')
+      expect(options[3]).toHaveTextContent('Arbitrum One')
     })
 
     it('calls switchChain when chain selector changes', () => {

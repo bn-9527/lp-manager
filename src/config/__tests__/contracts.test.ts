@@ -20,6 +20,12 @@ describe('getChainConfig', () => {
     expect(cfg.explorerUrl).toBe('https://basescan.org')
   })
 
+  it('returns Arbitrum config for chain 42161', () => {
+    const cfg = getChainConfig(42161)
+    expect(cfg.nativeSymbol).toBe('ETH')
+    expect(cfg.explorerUrl).toBe('https://arbiscan.io')
+  })
+
   it('falls back to BSC for undefined chainId', () => {
     expect(getChainConfig(undefined)).toBe(CHAIN_CONFIG[56])
   })
@@ -34,6 +40,7 @@ describe('isChainSupported', () => {
     expect(isChainSupported(56)).toBe(true)
     expect(isChainSupported(1)).toBe(true)
     expect(isChainSupported(8453)).toBe(true)
+    expect(isChainSupported(42161)).toBe(true)
   })
 
   it('returns false for unsupported chains', () => {

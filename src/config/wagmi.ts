@@ -2,14 +2,14 @@ import { WagmiAdapter } from '@reown/appkit-adapter-wagmi'
 // FIX: 必须从 @reown/appkit/react 导入 createAppKit，
 // 否则 useAppKit() hook 找不到已初始化的实例，会报 "call createAppKit before useAppKit"
 import { createAppKit } from '@reown/appkit/react'
-import { bsc, mainnet, base } from '@reown/appkit/networks'
+import { bsc, mainnet, base, arbitrum } from '@reown/appkit/networks'
 import { QueryClient } from '@tanstack/react-query'
 import { SUPPORTED_CHAIN_IDS } from './contracts'
 
 const projectId = 'fe525a3fb7824f87c529d0935853cc2d'
 // FIX: 链列表从 SUPPORTED_CHAIN_IDS (contracts.ts CHAIN_CONFIG) 派生，
 // 避免与 ConnectButton.tsx 和 contracts.ts 三处独立硬编码导致新增链时遗漏。
-const APPKIT_CHAIN_MAP = { 56: bsc, 1: mainnet, 8453: base } as const
+const APPKIT_CHAIN_MAP = { 56: bsc, 1: mainnet, 8453: base, 42161: arbitrum } as const
 // FIX: createAppKit 要求 [AppKitNetwork, ...AppKitNetwork[]] 非空元组，
 // 普通数组 AppKitNetwork[] 不满足该约束，需用 as const 断言转为元组类型
 const networks = SUPPORTED_CHAIN_IDS

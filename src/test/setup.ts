@@ -64,4 +64,5 @@ vi.mock('wagmi/chains', () => ({
   bsc: { id: 56, name: 'BNB Smart Chain' },
   mainnet: { id: 1, name: 'Ethereum' },
   base: { id: 8453, name: 'Base' },
+  arbitrum: { id: 42161, name: 'Arbitrum One' },
 }))

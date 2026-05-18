@@ -40,6 +40,15 @@ export const CHAIN_CONFIG: Record<number, ChainConfig> = {
     nativeSymbol: 'ETH',
     positionsUrl: 'https://app.uniswap.org/positions?chain=base',
   },
+  // Arbitrum One
+  42161: {
+    positionManager: '0xd88F38F930b7952f2DB2432Cb002E7abbF3dd869',
+    permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    stateView: '0x76Fd297e2D437cd7F76d50F01AfE6160f86e9990',
+    explorerUrl: 'https://arbiscan.io',
+    nativeSymbol: 'ETH',
+    positionsUrl: 'https://app.uniswap.org/positions?chain=arbitrum',
+  },
 }
 
 export const ZERO_ADDR = '0x0000000000000000000000000000000000000000' as const
@@ -51,9 +60,9 @@ export function getChainConfig(chainId: number | undefined): ChainConfig {
 }
 
 // FIX: 统一的支持链 ID 列表，避免在 wagmi.ts/ConnectButton.tsx/contracts.ts 三处分别定义。
-// 显式列出而非 Object.keys() 派生，因为 JS 对数字键按升序排列（1,56,8453），
+// 显式列出而非 Object.keys() 派生，因为 JS 对数字键按升序排列（1,56,8453,42161），
 // 而业务需要 BSC 优先（56 在最前）的顺序，该顺序决定 wagmi 默认链和 UI 下拉列表排序。
-export const SUPPORTED_CHAIN_IDS: number[] = [56, 1, 8453]
+export const SUPPORTED_CHAIN_IDS: number[] = [56, 1, 8453, 42161]
 
 export function isChainSupported(chainId: number | undefined): boolean {
   return chainId !== undefined && chainId in CHAIN_CONFIG
