@@ -107,16 +107,20 @@ export default function HookManager({ onBusy }: { onBusy?: (busy: boolean) => vo
   const [fee, setFee] = useState('500')
   const [tickSpacing, setTickSpacing] = useState('10')
   // FIX: fee=0 是 Uniswap V4 合法值（动态费率池，由 hook 在 swap 时设置费率）。
-  // fee>0 时 tickSpacing 由 feeToTickSpacing 自动计算；fee=0 时用户必须手动指定 tickSpacing，
-  // 因为动态费率池的 tickSpacing 由部署者决定，无法从 fee 推导。
+  // - Uni V4 静态费率池（fee>0）：tickSpacing 由 feeToTickSpacing 自动派生；
+  // - Uni V4 动态费率池（fee=0）：tickSpacing 由部署者决定，必须手动输入；
+  // - PCS CL：tickSpacing 不与 fee 绑定，部署者可自由选择，因此 PCS 协议下始终允许手动编辑。
   const feeNum = parseInt(fee)
   const isFeeZero = feeNum === 0
+  const tickSpacingEditable = isFeeZero || protocol === 'pcs-cl'
   useEffect(() => {
     // FIX: 在 effect 内部重新 parseInt，避免 exhaustive-deps 警告。
     // feeNum 是从 fee 同步派生的局部变量，但 lint 无法推断两者关系。
+    // PCS CL 下 tickSpacing 与 fee 解耦，不应根据 fee 自动覆盖用户输入。
+    if (protocol === 'pcs-cl') return
     const f = parseInt(fee)
     if (!isNaN(f) && f > 0) setTickSpacing(String(feeToTickSpacing(f)))
-  }, [fee])
+  }, [fee, protocol])
 
   // FIX: 必须校验 token0 != token1，相同地址会导致 initializePool 等链上调用 revert 浪费 gas。
   // fee 范围 [0, 1000000]：0 = 动态费率池，1000000 = 100%（Uniswap V4 上限）。
@@ -566,14 +570,15 @@ export default function HookManager({ onBusy }: { onBusy?: (busy: boolean) => vo
         </div>
         <div className="form-group">
           <label>Tick Spacing</label>
-          {/* FIX: fee>0 时 tickSpacing 由 feeToTickSpacing 自动计算，手动编辑会导致
-              getPoolId 查到错误的 poolId。fee=0（动态费率池）时解锁让用户手动指定，
-              因为动态费率池的 tickSpacing 由部署者决定，无法从 fee=0 推导。 */}
+          {/* FIX: Uni V4 静态费率池下 tickSpacing 由 feeToTickSpacing 自动计算，手动编辑会导致
+              getPoolId 查到错误的 poolId。fee=0（动态费率池）或 PCS CL 协议时解锁让用户手动指定：
+              - 动态费率池的 tickSpacing 由部署者决定，无法从 fee=0 推导；
+              - PCS CL 的 tickSpacing 与 fee 解耦，由部署者自由选择。 */}
           <input value={tickSpacing}
-            readOnly={!isFeeZero}
-            onChange={e => { if (isFeeZero) setTickSpacing(e.target.value) }}
-            style={{ opacity: isFeeZero ? 1 : 0.7 }}
-            placeholder={isFeeZero ? 'Enter tick spacing for dynamic fee pool' : ''} />
+            readOnly={!tickSpacingEditable}
+            onChange={e => { if (tickSpacingEditable) setTickSpacing(e.target.value) }}
+            style={{ opacity: tickSpacingEditable ? 1 : 0.7 }}
+            placeholder={tickSpacingEditable ? 'Enter tick spacing' : ''} />
         </div>
       </div>
       {poolIdHex && (
