@@ -93,6 +93,7 @@ export const HOOK_CONFIGS: Record<HookProtocol, HookProtocolConfig> = {
     label: 'PCS CL',
     defaultAddresses: {
       56: '0xb0bb171D333569CfD28a37F5c5DdDAAa90aD46af',
+      8453: '0xB0BB0E324829ae6F5af707f19657BEBbcE9Cf819',
     },
     abi: [...sharedManagementAbi, ...clInitializePoolAbi] as const,
     needsPoolManager: true,
